@@ -19,7 +19,7 @@ load_dotenv()
 st.set_page_config(page_title="Ring CopyRepo Intelligence — Preserve Excel Columns", layout="wide")
 
 PDF_CONTEXT_CHARS = 1500
-DEFAULT_TEMPLATE_PATH = "Ring_Copy_Solution_Comprehensive_Template.xlsx"
+DEFAULT_TEMPLATE_PATH = "Ring_Copy_Solution_Enhanced_with_Clownfish_Jellyfish_and_Needlefish.xlsx"
 
 # ============================
 # Styles
