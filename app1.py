@@ -228,7 +228,7 @@ st.caption("Upload your Excel template, preview sheets, select a Product Unique 
 
 with st.sidebar:
     st.subheader("⚙️ Configuration")
-    api_key = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    api_key = os.getenv("OPENAI_API_KEY","") 
     model = st.selectbox(
         "OpenAI model",
         options=[DEFAULT_MODEL, "gpt-4o-2024-08-06", "gpt-4.1-mini", "gpt-4.1"],
