@@ -144,12 +144,15 @@ def build_system_prompt_text(
         f"- Reference Content IDs: {content_data.get('Related_Content_IDs','')}\n"
         f"- Amazon Q Tags: {content_data.get('Amazon_Q_Tags','')}\n\n"
         f"ADDITIONAL USER CONTEXT:\n{user_context}\n\n"
-        "Instructions:\n"
-        "- Produce one finalized copy block per variation.\n"
-        "- Keep each variation unique but aligned to the same constraints.\n"
-        "- Respect any stated character limits if provided.\n"
-        "- Include a natural CTA if 'CTA Type' is specified.\n"
-        "- Output only the copy text for each variation, with no JSON or extra commentary."
+        """OUTPUT REQUIREMENTS:
+            Return ONLY a valid JSON object with these exact fields:
+            {
+                "Content_Title": "generated title",
+                "Content_Body": "generated body copy", 
+                "Headline_Variants": "variant1|variant2|variant3",
+                "Keywords_Primary": "primary keywords",
+                "Keywords_Secondary": "secondary keywords"
+            }"""
     )
     return system_prompt
 
@@ -182,6 +185,39 @@ def call_openai_text_variations(client, model, system_prompt, n=3, seed=None):
         outputs.append(content)
     return outputs
 
+# ---- Enhanced OpenAI Integration ----
+def get_enhanced_openai_response(client, prompt: str, model: str = DEFAULT_MODEL, 
+                                n: int = 1, temperature: float = 0.7) :
+    """Enhanced OpenAI call with better error handling and validation"""
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "Generate the Ring copy now following all requirements exactly."}
+            ],
+            response_format={"type": "json_object"},
+            n=n,
+            temperature=temperature,
+            max_tokens=4000
+        )
+        results = []
+        for choice in response.choices:
+            try:
+                content = choice.message.content
+                parsed = json.loads(content)
+                required_fields = ["Content_Title", "Content_Body", "Headline_Variants", 
+                                   "Keywords_Primary", "Keywords_Secondary"]
+                if all(field in parsed for field in required_fields):
+                    results.append(parsed)
+                else:
+                    results.append({"error": "Missing required fields", "raw": content})
+            except json.JSONDecodeError:
+                results.append({"error": "Invalid JSON", "raw": choice.message.content})
+        return results
+    except Exception as e:
+        return [{"error": str(e)}]
+
 def load_excel_sheets(file_buffer: BytesIO, filename: str) -> dict:
     """
     Return dict[str, DataFrame] for all sheets.
@@ -213,8 +249,11 @@ except Exception:
 st.title("🛎️ Ring Copy Generator — Text Variations")
 st.caption("Upload your Excel template, pick a Product Unique Identifier, provide optional context, and generate copy variations in plain text.")
 
-# File uploader
-uploaded = st.file_uploader("Upload Excel (.xlsx / .xls / .xlsm)", type=["xlsx", "xls", "xlsm"])
+uploaded = st.file_uploader(
+    "Upload Ring Copy Template",
+    type=["xlsx", "xlsm"],
+    help="Upload your Ring copy solution template"
+)
 
 xls = None
 if uploaded is not None:
@@ -224,6 +263,23 @@ if uploaded is not None:
     except Exception as e:
         st.error(f"Failed to read Excel: {e}")
 
+# ------------------------- NEW: Excel Preview UI -------------------------
+if xls:
+    st.markdown("### 👀 Preview Excel Sheets")
+    preview_rows = st.slider("Rows to show per sheet", min_value=5, max_value=500, value=50, step=5)
+    sheet_names = list(xls.keys())
+    tabs = st.tabs(sheet_names)
+    for tab, name in zip(tabs, sheet_names):
+        with tab:
+            df = xls[name]
+            st.write(f"**{name}** — {df.shape[0]} rows × {df.shape[1]} columns")
+            if df.shape[0] > preview_rows:
+                st.info(f"Showing first {preview_rows} rows.")
+                st.dataframe(df.head(preview_rows))
+            else:
+                st.dataframe(df)
+# ------------------------------------------------------------------------
+
 def collect_all_ids(xls_dict):
     """
     Gather all possible Product Unique Identifiers from likely columns across all sheets.
@@ -232,7 +288,7 @@ def collect_all_ids(xls_dict):
     if not xls_dict:
         return [], {}
 
-    id_candidates = ["Product Unique Identifier", "Product_Unique_Identifier", "PUID", "SKU", "ID"]
+    id_candidates = ["ID"]
     id_values = []
     id_index = {}
 
@@ -248,8 +304,7 @@ def collect_all_ids(xls_dict):
                 chosen_col = guess
                 break
         if chosen_col is None and len(display_cols) > 0:
-            # Fallback to first column if no typical ID column found
-            chosen_col = display_cols[0]
+            chosen_col = display_cols[0]  # Fallback to first column
 
         # Record IDs
         for idx, val in df[chosen_col].items():
@@ -277,30 +332,29 @@ selected_puid = None
 if product_ids:
     selected_puid = st.selectbox("Product Unique Identifier", options=product_ids, index=0)
 
-user_context = st.text_area("Additional context (optional)", placeholder="E.g., campaign angle, seasonal hook, target channel emphasis, promo details...")
+user_context = st.text_area(
+    "Additional context (optional)",
+    placeholder="E.g., campaign angle, seasonal hook, target channel emphasis, promo details..."
+)
 
 # Generate button
 go = st.button("Generate Variations")
 
 # --- Generation flow ---
 if go:
-    # Ensure API key present (from env preferred)
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         st.error("Missing OPENAI_API_KEY. Set it in your environment or .env file.")
     elif not xls or not selected_puid:
         st.error("Please upload an Excel file and select a Product Unique Identifier.")
     else:
-        # Find the matching row across sheets
         sheet_name, row_idx, used_col = id_lookup[selected_puid]
         df = xls[sheet_name]
         row = df.loc[row_idx]
         content_data = row_to_content_data(row)
 
-        # Auto-detect brand guideline/template text
         auto_guidelines, auto_template = try_autodetect_long_text(xls)
 
-        # Build system prompt for TEXT output
         system_prompt = build_system_prompt_text(
             ring_brand_guidelines=auto_guidelines,
             approved_copy_template=auto_template,
@@ -309,28 +363,32 @@ if go:
             PDF_CONTEXT_CHARS=PDF_CONTEXT_CHARS_DEFAULT
         )
 
-        # Call OpenAI
         with st.spinner("Generating variations..."):
             try:
-                client = get_openai_client(api_key=api_key)
-                outputs = call_openai_text_variations(
-                    client=client,
+                results = get_enhanced_openai_response(
+                    client=get_openai_client(api_key=api_key),
+                    prompt=system_prompt,
                     model=DEFAULT_MODEL,
-                    system_prompt=system_prompt,
                     n=NUM_VARIATIONS,
-                    seed=None
+                    temperature=0.7
                 )
-            except Exception as e:
-                st.error(f"OpenAI error: {e}")
-                outputs = []
 
-        # Show TEXT variations (no JSON)
-        if outputs:
-            st.success(f"Generated {len(outputs)} variation(s) for `{selected_puid}` "
-                       f"(from sheet: {sheet_name}, ID column: {used_col}).")
-            for i, text_block in enumerate(outputs, start=1):
-                with st.expander(f"Variation {i}", expanded=(len(outputs) == 1)):
-                    # Ensure clean text rendering without extra JSON/markdown structures
-                    st.write(text_block)
-        else:
-            st.warning("No output generated. Try adding more context or verifying the Excel content.")
+                st.success(f"Generated {len(results)} variations")
+                for i, result in enumerate(results, 1):
+                    if 'error' in result:
+                        st.error(f"Variation {i}: {result['error']}")
+                        continue
+
+                    with st.expander(f"📝 Variation {i}", expanded=(i == 1)):
+                        title = result.get('Content_Title', '')
+                        body = result.get('Content_Body', '')
+                        st.text_area("Title", title, key=f"title_{i}")
+                        st.text_area("Body", body, key=f"body_{i}")
+                        st.text_input("Headlines", result.get('Headline_Variants', ''), key=f"headlines_{i}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.text_input("Primary Keywords", result.get('Keywords_Primary', ''), key=f"kw1_{i}")
+                        with col2:
+                            st.text_input("Secondary Keywords", result.get('Keywords_Secondary', ''), key=f"kw2_{i}")
+            except Exception as e:
+                st.error(f"Generation failed: {str(e)}")
