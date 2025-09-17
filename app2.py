@@ -206,7 +206,7 @@ st.set_page_config(page_title="Ring Copy Generator (Text Variations)", page_icon
 
 # Logo at the very top
 try:
-    st.image("image (1).png", use_column_width=False, width=160)
+    st.image("image (1).png", use_container_width=False, width=160)
 except Exception:
     pass  # If the image isn't present, just continue silently.
 
