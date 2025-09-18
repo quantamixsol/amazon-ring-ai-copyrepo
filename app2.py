@@ -40,6 +40,9 @@ def coerce_str(x):
     if x is None:
         return ""
     if isinstance(x, (float, int)):
+        # Avoid ".0" look for ints
+        if isinstance(x, float) and x.is_integer():
+            return str(int(x))
         return str(x)
     if isinstance(x, str):
         return x
@@ -98,52 +101,37 @@ def row_to_content_data(row: pd.Series) -> dict:
     ]
     cd = {}
     rd = row.to_dict()
-    for k in keys:
-        cd[k] = coerce_str(safe_get(rd, k, ""))
-    return cd
+    # for k in keys:
+    #     cd[k] = coerce_str(safe_get(rd, k, ""))
+    return rd
 
 def build_system_prompt_text(
     ring_brand_guidelines: str,
     approved_copy_template: str,
     content_data: dict,
-    user_context: str,
+    base_prompt: str,
+    additional_context: str,
+    guardrails: str,
     PDF_CONTEXT_CHARS: int
 ) -> str:
     # Trim oversized context to keep prompt lean
     ring_brand_guidelines = (ring_brand_guidelines or "")[:PDF_CONTEXT_CHARS]
     approved_copy_template = (approved_copy_template or "")[:PDF_CONTEXT_CHARS]
-    user_context = user_context or ""
-
-    # Compose a TEXT-focused system prompt (no JSON output)
+    base_prompt = base_prompt or ""
+    additional_context = additional_context or ""
+    guardrails = guardrails or ""
     system_prompt = (
         "You are a senior copywriter for Ring. "
         "Use the brand guidelines and the approved template patterns as non-negotiable constraints. "
         "Write copy that is channel-appropriate, concise, and strictly consistent with Ring's voice.\n\n"
         f"BRAND GUIDELINES:\n{ring_brand_guidelines}\n\n"
         f"APPROVED TEMPLATE PATTERNS:\n{approved_copy_template}\n\n"
-        "CONTENT CLASSIFICATION (from the Excel row):\n"
-        f"- Primary Category: {content_data.get('Primary_Category','')}\n"
-        f"- Secondary Category: {content_data.get('Secondary_Category','')}\n"
-        f"- Product Line: {content_data.get('Product_Line','')}\n"
-        f"- Channel Optimization: {content_data.get('Channel_Optimization','')}\n"
-        f"- Target Audience: {content_data.get('Target_Audience','')}\n"
-        f"- Brand Voice Tag: {content_data.get('Brand_Voice_Tag','')}\n"
-        f"- Tone: {content_data.get('Tone','')}\n"
-        f"- Message Type: {content_data.get('Message_Type','')}\n"
-        f"- Content Type: {content_data.get('Content_Type','')}\n"
-        f"- Content Length: {content_data.get('Content_Length','')}\n"
-        f"- Character Count limit: {content_data.get('Character_Count','No limit')}\n"
-        f"- CTA Type: {content_data.get('CTA_Type','')}\n"
-        f"- Feature Focus: {content_data.get('Feature_Focus','')}\n"
-        f"- Benefit Highlight: {content_data.get('Benefit_Highlight','')}\n"
-        f"- Pain Point Addressed: {content_data.get('Pain_Point_Addressed','')}\n"
-        f"- Emotional Appeal: {content_data.get('Emotional_Appeal','')}\n"
-        f"- Technical Level: {content_data.get('Technical_Level','')}\n"
-        f"- Customer Journey Stage: {content_data.get('Customer_Journey_Stage','')}\n"
-        f"- Use Case: {content_data.get('Use_Case','')}\n"
-        f"- Reference Content IDs: {content_data.get('Related_Content_IDs','')}\n"
-        f"- Amazon Q Tags: {content_data.get('Amazon_Q_Tags','')}\n\n"
-        f"ADDITIONAL USER CONTEXT:\n{user_context}\n\n"
+        "CONTENT CLASSIFICATION (from the Excel row):\nFULL_ROW_RECORD (authoritative, use all fields below as ground truth for content generation):\n"
+        f"{content_data}\n\n"
+        "AUTHORING CONTEXT:\n"
+        f"- Base Prompt (overall objective): {base_prompt}\n"
+        f"- Additional Context (extras/nuance): {additional_context}\n"
+        f"- Guardrails (what NOT to do): {guardrails}\n\n"
         """OUTPUT REQUIREMENTS:
             Return ONLY a valid JSON object with these exact fields:
             {
@@ -151,7 +139,9 @@ def build_system_prompt_text(
                 "Content_Body": "generated body copy", 
                 "Headline_Variants": "variant1|variant2|variant3",
                 "Keywords_Primary": "primary keywords",
-                "Keywords_Secondary": "secondary keywords"
+                "Keywords_Secondary": "secondary keywords",
+                "Description": "compelling summary (3-5 sentences) "
+
             }"""
     )
     return system_prompt
@@ -162,32 +152,8 @@ def get_openai_client(api_key: str = None):
         return OpenAI(api_key=api_key)
     return OpenAI()
 
-def call_openai_text_variations(client, model, system_prompt, n=3, seed=None):
-    """
-    Uses Chat Completions to return 'n' pure-text variations (no JSON).
-    """
-    params = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Write {n} distinct variations. Output only the text for each variation."},
-        ],
-        "n": int(n),
-    }
-    if seed is not None:
-        params["seed"] = int(seed)
-
-    resp = client.chat.completions.create(**params)
-
-    outputs = []
-    for ch in resp.choices:
-        content = ch.message.content.strip()
-        outputs.append(content)
-    return outputs
-
-# ---- Enhanced OpenAI Integration ----
 def get_enhanced_openai_response(client, prompt: str, model: str = DEFAULT_MODEL, 
-                                n: int = 1, temperature: float = 0.7) :
+                                n: int = 1, temperature: float = 0.7):
     """Enhanced OpenAI call with better error handling and validation"""
     try:
         response = client.chat.completions.create(
@@ -207,7 +173,7 @@ def get_enhanced_openai_response(client, prompt: str, model: str = DEFAULT_MODEL
                 content = choice.message.content
                 parsed = json.loads(content)
                 required_fields = ["Content_Title", "Content_Body", "Headline_Variants", 
-                                   "Keywords_Primary", "Keywords_Secondary"]
+                                   "Keywords_Primary", "Keywords_Secondary","Description"]
                 if all(field in parsed for field in required_fields):
                     results.append(parsed)
                 else:
@@ -247,7 +213,7 @@ except Exception:
     pass  # If the image isn't present, just continue silently.
 
 st.title("🛎️ Ring Copy Generator — Text Variations")
-st.caption("Upload your Excel template, pick a Product Unique Identifier, provide optional context, and generate copy variations in plain text.")
+st.caption("Upload your Excel template, pick a Product Unique Identifier (column + value) from the FIRST sheet, add context, and generate copy variations.")
 
 uploaded = st.file_uploader(
     "Upload Ring Copy Template",
@@ -263,78 +229,68 @@ if uploaded is not None:
     except Exception as e:
         st.error(f"Failed to read Excel: {e}")
 
-# ------------------------- NEW: Excel Preview UI -------------------------
+# ------------------------- Preview: FIRST SHEET ONLY -------------------------
+first_sheet_name = None
+first_df = None
 if xls:
-    st.markdown("### 👀 Preview Excel Sheets")
-    preview_rows = st.slider("Rows to show per sheet", min_value=5, max_value=500, value=50, step=5)
-    sheet_names = list(xls.keys())
-    tabs = st.tabs(sheet_names)
-    for tab, name in zip(tabs, sheet_names):
-        with tab:
-            df = xls[name]
-            st.write(f"**{name}** — {df.shape[0]} rows × {df.shape[1]} columns")
-            if df.shape[0] > preview_rows:
-                st.info(f"Showing first {preview_rows} rows.")
-                st.dataframe(df.head(preview_rows))
-            else:
-                st.dataframe(df)
-# ------------------------------------------------------------------------
-
-def collect_all_ids(xls_dict):
-    """
-    Gather all possible Product Unique Identifiers from likely columns across all sheets.
-    Returns (id_values: list[str], id_index: dict[value] -> (sheet_name, row_index, id_col_used))
-    """
-    if not xls_dict:
-        return [], {}
-
-    id_candidates = ["ID"]
-    id_values = []
-    id_index = {}
-
-    for sheet_name, df in xls_dict.items():
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            continue
-
-        # Choose first matching id column if any
-        display_cols = [str(c) for c in df.columns]
-        chosen_col = None
-        for guess in id_candidates:
-            if guess in display_cols:
-                chosen_col = guess
-                break
-        if chosen_col is None and len(display_cols) > 0:
-            chosen_col = display_cols[0]  # Fallback to first column
-
-        # Record IDs
-        for idx, val in df[chosen_col].items():
-            sval = coerce_str(val).strip()
-            if not sval:
-                continue
-            if sval not in id_index:
-                id_index[sval] = (sheet_name, idx, chosen_col)
-                id_values.append(sval)
-
-    id_values_sorted = sorted(set(id_values))
-    return id_values_sorted, id_index
-
-product_ids = []
-id_lookup = {}
-if xls:
-    product_ids, id_lookup = collect_all_ids(xls)
-    if not product_ids:
-        st.warning("No Product Unique Identifiers found. Check your sheet structure.")
+    first_sheet_name = list(xls.keys())[0]
+    first_df = xls[first_sheet_name]
+    st.markdown("### 👀 Preview (First Sheet Only)")
+    preview_rows = st.slider("Rows to show", min_value=5, max_value=500, value=50, step=5, key="preview_rows_first")
+    st.write(f"**{first_sheet_name}** — {first_df.shape[0]} rows × {first_df.shape[1]} columns")
+    if first_df.shape[0] > preview_rows:
+        st.info(f"Showing first {preview_rows} rows.")
+        st.dataframe(first_df.head(preview_rows))
     else:
-        st.info(f"Detected {len(product_ids)} content ID(s) across {len(xls)} sheet(s).")
+        st.dataframe(first_df)
 
-# Single dropdown (required) + context input
-selected_puid = None
-if product_ids:
-    selected_puid = st.selectbox("Product Unique Identifier", options=product_ids, index=0)
+# ------------------------- NEW: Product Unique Identifier selection -------------------------
+selected_id_col = None
+selected_id_val = None
 
-user_context = st.text_area(
-    "Additional context (optional)",
-    placeholder="E.g., campaign angle, seasonal hook, target channel emphasis, promo details..."
+if first_df is not None and not first_df.empty:
+    st.markdown("### 🔎 Select Product Unique Identifier")
+    # 1) Dropdown: show ALL columns from the FIRST sheet
+    selected_id_col = st.selectbox(
+        "Product Unique Identifier (column)",
+        options=[str(c) for c in first_df.columns],
+        index=0
+    )
+
+    # 2) Dropdown: show ALL values present in that column
+    # Clean values: drop NaN, convert to string, strip, unique, non-empty
+    id_vals = (
+        first_df[selected_id_col]
+        .apply(coerce_str)
+        .apply(lambda s: s.strip())
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    id_vals_sorted = sorted(id_vals, key=lambda x: (x.lower(), x)) if id_vals else []
+    if not id_vals_sorted:
+        st.warning("No values detected in the selected column.")
+    else:
+        selected_id_val = st.selectbox(
+            "Product Unique Identifier (value)",
+            options=id_vals_sorted,
+            index=0
+        )
+
+# ------------------------- NEW: Context fields -------------------------
+st.markdown("### ✍️ Authoring Context")
+base_prompt = st.text_area(
+    "Base Prompt (overall objective)",
+    placeholder="E.g., create a crisp product spotlight post optimized for LinkedIn with a subtle brand voice..."
+)
+additional_context = st.text_area(
+    "Additional Context (optional)",
+    placeholder="E.g., seasonal hook, promo details, target channel emphasis, competitor positioning..."
+)
+guardrails = st.text_area(
+    "Guardrails (what NOT to do)",
+    placeholder="E.g., avoid mentioning pricing, no negative comparisons, do not overpromise battery life..."
 )
 
 # Generate button
@@ -345,50 +301,66 @@ if go:
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         st.error("Missing OPENAI_API_KEY. Set it in your environment or .env file.")
-    elif not xls or not selected_puid:
-        st.error("Please upload an Excel file and select a Product Unique Identifier.")
+    elif not xls or first_df is None:
+        st.error("Please upload an Excel file.")
+    elif not selected_id_col or not selected_id_val:
+        st.error("Please select both Product Unique Identifier column and value.")
     else:
-        sheet_name, row_idx, used_col = id_lookup[selected_puid]
-        df = xls[sheet_name]
-        row = df.loc[row_idx]
-        content_data = row_to_content_data(row)
+        # Locate the first matching row in FIRST sheet by selected column/value
+        try:
+            # ensure string compare
+            mask = first_df[selected_id_col].apply(coerce_str).str.strip() == coerce_str(selected_id_val).strip()
+            if not mask.any():
+                st.error("No matching row found for the selected value.")
+            else:
+                row = first_df[mask].iloc[0]
+                content_data = row_to_content_data(row)
 
-        auto_guidelines, auto_template = try_autodetect_long_text(xls)
-
-        system_prompt = build_system_prompt_text(
-            ring_brand_guidelines=auto_guidelines,
-            approved_copy_template=auto_template,
-            content_data=content_data,
-            user_context=user_context,
-            PDF_CONTEXT_CHARS=PDF_CONTEXT_CHARS_DEFAULT
-        )
-
-        with st.spinner("Generating variations..."):
-            try:
-                results = get_enhanced_openai_response(
-                    client=get_openai_client(api_key=api_key),
-                    prompt=system_prompt,
-                    model=DEFAULT_MODEL,
-                    n=NUM_VARIATIONS,
-                    temperature=0.7
+                # auto-detect big text fields across ALL sheets (brand guidelines & template)
+                auto_guidelines, auto_template = try_autodetect_long_text(xls)
+                system_prompt = build_system_prompt_text(
+                    ring_brand_guidelines=auto_guidelines,
+                    approved_copy_template=auto_template,
+                    content_data=content_data,
+                    base_prompt=base_prompt,
+                    additional_context=additional_context,
+                    guardrails=guardrails,
+                    PDF_CONTEXT_CHARS=PDF_CONTEXT_CHARS_DEFAULT
                 )
+                with st.spinner("Generating variations..."):
+                    try:
+                        results = get_enhanced_openai_response(
+                            client=get_openai_client(api_key=api_key),
+                            prompt=system_prompt,
+                            model=DEFAULT_MODEL,
+                            n=NUM_VARIATIONS,
+                            temperature=0.7
+                        )
 
-                st.success(f"Generated {len(results)} variations")
-                for i, result in enumerate(results, 1):
-                    if 'error' in result:
-                        st.error(f"Variation {i}: {result['error']}")
-                        continue
+                        st.success(f"Generated {len(results)} variations")
+                        for i, result in enumerate(results, 1):
+                            if 'error' in result:
+                                st.error(f"Variation {i}: {result['error']}")
+                                if 'raw' in result:
+                                    with st.expander(f"Raw response {i}"):
+                                        st.code(result['raw'])
+                                continue
 
-                    with st.expander(f"📝 Variation {i}", expanded=(i == 1)):
-                        title = result.get('Content_Title', '')
-                        body = result.get('Content_Body', '')
-                        st.text_area("Title", title, key=f"title_{i}")
-                        st.text_area("Body", body, key=f"body_{i}")
-                        st.text_input("Headlines", result.get('Headline_Variants', ''), key=f"headlines_{i}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.text_input("Primary Keywords", result.get('Keywords_Primary', ''), key=f"kw1_{i}")
-                        with col2:
-                            st.text_input("Secondary Keywords", result.get('Keywords_Secondary', ''), key=f"kw2_{i}")
-            except Exception as e:
-                st.error(f"Generation failed: {str(e)}")
+                            with st.expander(f"📝 Variation {i}", expanded=(i == 1)):
+                                title = result.get('Content_Title', '')
+                                body = result.get('Content_Body', '')
+                                st.text_area("Title", title, key=f"title_{i}")
+                                st.text_area("Body", body, key=f"body_{i}")
+                                st.text_input("Headlines (pipe-separated)", result.get('Headline_Variants', ''), key=f"headlines_{i}")
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.text_input("Primary Keywords", result.get('Keywords_Primary', ''), key=f"kw1_{i}")
+                                with col2:
+                                    st.text_input("Secondary Keywords", result.get('Keywords_Secondary', ''), key=f"kw2_{i}")
+
+                                st.text_area("Description", result.get('Description', ''), key=f"description_{i}")
+
+                    except Exception as e:
+                        st.error(f"Generation failed: {str(e)}")
+        except Exception as e:
+            st.error(f"Failed to locate row for the selected Product Unique Identifier: {e}")
