@@ -19,7 +19,7 @@ PDF_CONTEXT_CHARS_DEFAULT = 16000
 NUM_VARIATIONS = 3
 
 # Default Excel path fallback
-DEFAULT_EXCEL_PATH = r"D:\Quantamix solution\amazon-ring-ai-copyrepo\Ring_Copy_Solution_Enhanced_with_Clownfish_Jellyfish_and_Needlefish.xlsx"
+DEFAULT_EXCEL_PATH = "Ring_Copy_Solution_Enhanced_with_Clownfish_Jellyfish_and_Needlefish.xlsx"
 
 # ---- Notification helper ----
 def notify(msg: str, icon: Optional[str] = None):
