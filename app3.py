@@ -14,12 +14,35 @@ from typing import Optional, List, Dict
 load_dotenv()
 
 # ---- Constants ----
-DEFAULT_MODEL = "gpt-4o-mini-2024-07-18"
+DEFAULT_MODEL = "gpt-5"
 PDF_CONTEXT_CHARS_DEFAULT = 16000
 NUM_VARIATIONS = 3
 
 # Default Excel path fallback
 DEFAULT_EXCEL_PATH = "Ring_Copy_Solution_Enhanced_with_Clownfish_Jellyfish_and_Needlefish.xlsx"
+
+# ---------------- Helpers added for your requests ----------------
+LOGO_CANDIDATES = [
+    "image (1).png",  # project root (relative)
+]
+
+def get_logo_path() -> Optional[str]:
+    for p in LOGO_CANDIDATES:
+        try:
+            if os.path.exists(p):
+                return p
+        except Exception:
+            pass
+    return None
+
+def do_rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+    else:
+        st.session_state["_force_refresh"] = st.session_state.get("_force_refresh", 0) + 1
+# ----------------------------------------------------------------
 
 # ---- Notification helper ----
 def notify(msg: str, icon: Optional[str] = None):
@@ -81,42 +104,79 @@ def row_to_content_data(row: pd.Series) -> dict:
 
 # ---------- Expected fields per variant ----------
 VARIANT_FIELDS: Dict[str, List[str]] = {
-    # 1) Ring Copywriter
     "ring": [
-        "Content_Title",
-        "Content_Body",
-        "Headline_Variants",
-        "Keywords_Primary",
-        "Keywords_Secondary",
-        "Description",
+        "Content_Title", "Content_Body", "Headline_Variants",
+        "Keywords_Primary", "Keywords_Secondary", "Description",
     ],
-    # 2) Social Media
     "social": [
-        "Hashtags",
-        "Engagement_Hook",
-        "Value_Prop",
-        "Address_Concerns",
-        "Content",
+        "Hashtags", "Engagement_Hook", "Value_Prop",
+        "Address_Concerns", "Content",
     ],
-    # 3) Email Campaign
     "email": [
-        "Subject_Line",
-        "Greeting",
-        "Main_Content",
-        "Reference",
+        "Subject_Line", "Greeting", "Main_Content", "Reference",
     ],
-    # 4) Audience Adaptation (replaces Cross-Channel)
     "audience": [
-        "Easy_Installation_Self_Setup",
-        "Technical_Features_and_Control",
-        "Technical_Specifications",
-        "Security_Benefits_Messaging",
+        "Easy_Installation_Self_Setup", "Technical_Features_and_Control",
+        "Technical_Specifications", "Security_Benefits_Messaging",
     ],
+}
+
+# ---------- Per-mode default Authoring Context ----------
+DEFAULT_CONTEXT: Dict[str, Dict[str, str]] = {
+    "ring": {
+        "base_prompt": (
+            "Write clear, benefit-led Ring product copy with a confident, friendly tone. "
+            "Lead with the problem Ring solves, highlight security and convenience, and include a crisp CTA."
+        ),
+        "additional_context": (
+            "Prioritize clarity, brevity, and trust. Mention app control, real-time alerts, and easy setup. "
+            "Avoid jargon unless it adds credibility."
+        ),
+        "guardrails": (
+            "No false claims. No sensitive or fear-based messaging. Keep reading level ~Grade 7–9. "
+            "Avoid overuse of exclamation and ALL CAPS."
+        ),
+    },
+    "social": {
+        "base_prompt": "Craft a scannable, thumb-stopping post with a 1-line hook, value, and CTA.",
+        "additional_context": (
+            "Use crisp sentences and native conventions. Add 3–6 relevant hashtags. "
+            "Focus on use-cases: missed deliveries, peace of mind, easy install."
+        ),
+        "guardrails": "No spammy phrasing or clickbait. Respect platform tone. Keep under 100–140 words.",
+    },
+    "email": {
+        "base_prompt": (
+            "Write a concise marketing email: clear subject (≤60 chars), friendly greeting, "
+            "benefit-first body (100–150 words), and a single primary CTA."
+        ),
+        "additional_context": (
+            "Highlight real-time motion alerts, easy installation, and app control. "
+            "Use short paragraphs and skimmable structure."
+        ),
+        "guardrails": (
+            "Avoid spam-trigger words, all caps, and excessive punctuation. "
+            "Keep brand voice consistent and trustworthy."
+        ),
+    },
+    "audience": {
+        "base_prompt": (
+            "Adapt messaging by audience: emphasize easy self-setup, control via app, "
+            "and strong privacy/security framing."
+        ),
+        "additional_context": (
+            "Include concrete technical specs only when useful (resolution, field of view, connectivity). "
+            "Stress practical security benefits."
+        ),
+        "guardrails": (
+            "No unrealistic claims or fearmongering. Keep tone reassuring and practical. "
+            "Use plain language for non-technical readers."
+        ),
+    },
 }
 
 # ---------- System prompt variants ----------
 def build_output_requirements_json(variant: str) -> str:
-    """Return an OUTPUT REQUIREMENTS block with exact JSON schema per variant."""
     if variant == "ring":
         schema = """
 Return ONLY a valid JSON object with these exact fields:
@@ -224,10 +284,8 @@ def get_enhanced_openai_response(
     prompt: str,
     expected_fields: List[str],
     model: str = DEFAULT_MODEL,
-    n: int = 1,
-    temperature: float = 0.7
+    n: int = 1
 ):
-    """Call model and validate that all expected_fields are present."""
     try:
         response = client.chat.completions.create(
             model=model,
@@ -237,8 +295,7 @@ def get_enhanced_openai_response(
             ],
             response_format={"type": "json_object"},
             n=n,
-            temperature=temperature,
-            max_tokens=4000
+            max_completion_tokens=8000
         )
         results = []
         for choice in response.choices:
@@ -268,19 +325,26 @@ def load_excel_sheets(file_buffer: BytesIO, filename: str) -> dict:
         raise RuntimeError(f"Unsupported file extension: {ext}")
 
 # ---- Page config ----
-st.set_page_config(page_title="Ring Copy Generator", page_icon="🛎️", layout="wide")
+icon = next((p for p in LOGO_CANDIDATES if os.path.exists(p)), "")
+st.set_page_config(page_title="Ring Copy Generator", page_icon=icon, layout="wide")
 
 # ---- Session state ----
 ss = st.session_state
 ss.setdefault("initialized", False)
-ss.setdefault("file_loaded", False)      # file loaded & first_df ready
-ss.setdefault("preview_visible", False)  # preview visibility
+ss.setdefault("file_loaded", False)
+ss.setdefault("preview_visible", False)
 ss.setdefault("xls", None)
 ss.setdefault("first_df", None)
 ss.setdefault("first_sheet_name", None)
 ss.setdefault("uploaded_bytes", None)
 ss.setdefault("uploaded_name", None)
-ss.setdefault("selected_variant", None)  # "ring"/"social"/"email"/"audience"
+ss.setdefault("selected_variant", "ring")
+
+# Pre-load defaults for all modes (so switching has values ready)
+for _mode, ctx in DEFAULT_CONTEXT.items():
+    ss.setdefault(f"ctx_{_mode}_base", ctx["base_prompt"])
+    ss.setdefault(f"ctx_{_mode}_extra", ctx["additional_context"])
+    ss.setdefault(f"ctx_{_mode}_guard", ctx["guardrails"])
 
 # ---------- AUTO-LOAD so PUI shows on first open ----------
 if not ss.initialized:
@@ -353,8 +417,14 @@ with st.sidebar:
         ss.preview_visible = False
 
 # ====================== MAIN AREA ======================
-st.title("🛎️ Ring Copy Generator — Text Variations")
-st.caption("Upload your Excel in the sidebar, pick a Product Unique Identifier, choose a prompt mode, and then generate.")
+
+# --- Logo BEFORE heading ---
+logo_path = get_logo_path()
+if logo_path:
+    st.image(logo_path, width=200)
+
+st.title("Ring Copy Generator — Text Variations")
+st.caption("Upload your Excel in the sidebar, pick a Product Unique Identifier, choose a prompt mode, tweak the authoring context, and then generate.")
 
 # Preview
 if ss.preview_visible and ss.first_df is not None:
@@ -370,7 +440,7 @@ elif not ss.file_loaded:
 else:
     st.info("Preview is hidden. Click **Show** in the sidebar to display the Excel preview.")
 
-# ---------- PUI SECTION (always visible) ----------
+# ---------- PUI SECTION ----------
 st.markdown("### 🔎 Select Product Unique Identifier")
 if ss.first_df is not None and not ss.first_df.empty:
     cols_list = [str(c) for c in ss.first_df.columns]
@@ -400,21 +470,31 @@ else:
     selected_id_val = st.selectbox("Value", [], key="id_val", disabled=True)
     st.caption("No data loaded yet. Use the sidebar to upload or load the default file.")
 
-# ---------- PROMPT MODE PICKER (directly under PUI) ----------
+# ---------- PROMPT MODE PICKER (loads defaults on click) ----------
 st.markdown("### 🎛️ Choose Prompt Mode")
 c1, c2, c3, c4 = st.columns(4)
-with c1:
-    if st.button("Ring Copywriter", use_container_width=True):
-        ss.selected_variant = "ring"
-with c2:
-    if st.button("Social Media", use_container_width=True):
-        ss.selected_variant = "social"
-with c3:
-    if st.button("Email Campaign", use_container_width=True):
-        ss.selected_variant = "email"
-with c4:
-    if st.button("Audience Adaptation", use_container_width=True):
-        ss.selected_variant = "audience"
+
+def prompt_button(label: str, key_mode: str, container):
+    with container:
+        is_selected = (ss.selected_variant == key_mode)
+        clicked = st.button(
+            label,
+            key=f"btn_{key_mode}",
+            type=("primary" if is_selected else "secondary"),
+            use_container_width=True
+        )
+        if clicked:
+            # Always reset the target mode’s fields to its DEFAULT_CONTEXT on selection
+            ss[f"ctx_{key_mode}_base"]  = DEFAULT_CONTEXT[key_mode]["base_prompt"]
+            ss[f"ctx_{key_mode}_extra"] = DEFAULT_CONTEXT[key_mode]["additional_context"]
+            ss[f"ctx_{key_mode}_guard"] = DEFAULT_CONTEXT[key_mode]["guardrails"]
+            ss.selected_variant = key_mode
+            do_rerun()
+
+prompt_button("Ring Copywriter", "ring", c1)
+prompt_button("Social Media", "social", c2)
+prompt_button("Email Campaign", "email", c3)
+prompt_button("Audience Adaptation", "audience", c4)
 
 label_map = {
     "ring": "Ring Copywriter",
@@ -424,13 +504,18 @@ label_map = {
 }
 st.caption(f"Selected Mode: **{label_map.get(ss.selected_variant, 'None')}**")
 
-# ---------- Authoring context ----------
+# ---------- Authoring context (PER MODE; user-editable) ----------
 st.markdown("### ✍️ Authoring Context")
-base_prompt = st.text_area("Base Prompt", key="base_prompt")
-additional_context = st.text_area("Additional Context", key="additional_context")
-guardrails = st.text_area("Guardrails", key="guardrails")
+active_mode = ss.selected_variant or "ring"
+base_key  = f"ctx_{active_mode}_base"
+extra_key = f"ctx_{active_mode}_extra"
+guard_key = f"ctx_{active_mode}_guard"
 
-# ---------- SINGLE Generate button (runs the selected mode) ----------
+st.text_area("Base Prompt", key=base_key, height=110)
+st.text_area("Additional Context", key=extra_key, height=110)
+st.text_area("Guardrails", key=guard_key, height=110)
+
+# ---------- Generate ----------
 go = st.button("Generate Variations", use_container_width=True)
 if go:
     api_key = os.getenv("OPENAI_API_KEY", "")
@@ -443,6 +528,10 @@ if go:
     elif not ss.selected_variant:
         st.error("Please choose a Prompt Mode above before generating.")
     else:
+        base_prompt = ss.get(base_key, DEFAULT_CONTEXT[active_mode]["base_prompt"])
+        additional_context = ss.get(extra_key, DEFAULT_CONTEXT[active_mode]["additional_context"])
+        guardrails = ss.get(guard_key, DEFAULT_CONTEXT[active_mode]["guardrails"])
+
         mask = ss.first_df[selected_id_col].apply(coerce_str).str.strip() == coerce_str(selected_id_val).strip()
         if not mask.any():
             st.error("No matching row found.")
@@ -450,6 +539,7 @@ if go:
             row = ss.first_df[mask].iloc[0]
             content_data = row_to_content_data(row)
             auto_guidelines, auto_template = try_autodetect_long_text(ss.xls)
+
             system_prompt = build_system_prompt_text_variant(
                 variant=ss.selected_variant,
                 ring_brand_guidelines=auto_guidelines,
@@ -460,18 +550,17 @@ if go:
                 guardrails=guardrails,
                 PDF_CONTEXT_CHARS=PDF_CONTEXT_CHARS_DEFAULT
             )
+
             with st.spinner(f"Generating ({label_map[ss.selected_variant]})..."):
                 results = get_enhanced_openai_response(
                     get_openai_client(api_key),
                     system_prompt,
                     expected_fields=VARIANT_FIELDS[ss.selected_variant],
                     model=DEFAULT_MODEL,
-                    n=NUM_VARIATIONS,
-                    temperature=0.7
+                    n=NUM_VARIATIONS
                 )
                 st.success(f"{label_map[ss.selected_variant]}: Generated {len(results)} variation(s)")
 
-                # ---------- Render by variant ----------
                 for i, result in enumerate(results, 1):
                     if 'error' in result:
                         st.error(f"{label_map[ss.selected_variant]} — Variation {i}: {result['error']}")
