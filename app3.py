@@ -102,6 +102,27 @@ def try_autodetect_long_text(df_dict):
 def row_to_content_data(row: pd.Series) -> dict:
     return row.to_dict()
 
+def workbook_excerpt_for_llm(xls: dict, rows_per_sheet: int = 50, char_limit: int = PDF_CONTEXT_CHARS_DEFAULT) -> dict:
+    """
+    Build a compact, stringified excerpt of all sheets (up to `rows_per_sheet` each),
+    capped to `char_limit` characters. Returned inside a dict under '_workbook_excerpt'.
+    """
+    if not isinstance(xls, dict) or not xls:
+        return {"_workbook_excerpt": ""}
+
+    summary = {}
+    for sheet_name, df in xls.items():
+        try:
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                summary[sheet_name] = df.astype(str).head(rows_per_sheet).to_dict(orient="records")
+        except Exception:
+            continue
+
+    text = json.dumps(summary, ensure_ascii=False)
+    if len(text) > char_limit:
+        text = text[:char_limit]
+    return {"_workbook_excerpt": text}
+
 # ---------- Expected fields per variant ----------
 VARIANT_FIELDS: Dict[str, List[str]] = {
     "ring": [
@@ -129,7 +150,7 @@ DEFAULT_CONTEXT: Dict[str, Dict[str, str]] = {
             "Lead with the problem Ring solves, highlight security and convenience, and include a crisp CTA."
         ),
         "additional_context": (
-            "Prioritize clarity, brevity, and trust. Mention app control, real-time alerts, and easy setup. "
+            "Prioritise clarity, brevity, and trust. Mention app control, real-time alerts, and easy setup. "
             "Avoid jargon unless it adds credibility."
         ),
         "guardrails": (
@@ -161,7 +182,7 @@ DEFAULT_CONTEXT: Dict[str, Dict[str, str]] = {
     },
     "audience": {
         "base_prompt": (
-            "Adapt messaging by audience: emphasize easy self-setup, control via app, "
+            "Adapt messaging by audience: emphasise easy self-setup, control via app, "
             "and strong privacy/security framing."
         ),
         "additional_context": (
@@ -231,8 +252,8 @@ def build_variant_opening(variant: str) -> str:
     if variant == "social":
         return (
             "You are a Social Media Content Creator for Ring. "
-            "Craft platform-native, scroll-stopping copy with clear hooks and CTAs while honoring Ring's brand voice. "
-            "Optimize for engagement (thumb-stopping first line, brevity, scannability, hashtags where relevant)."
+            "Craft platform-native, scroll-stopping copy with clear hooks and CTAs while honouring Ring's brand voice. "
+            "Optimise for engagement (thumb-stopping first line, brevity, scannability, hashtags where relevant)."
         )
     if variant == "email":
         return (
@@ -243,7 +264,7 @@ def build_variant_opening(variant: str) -> str:
     if variant == "audience":
         return (
             "You are an Audience Adaptation campaign specialist for Ring. "
-            "Develop messaging that emphasizes easy installation and self-setup, highlights technical features and control, "
+            "Develop messaging that emphasises easy installation and self-setup, highlights technical features and control, "
             "includes technical specifications, and maintains strong security benefits messaging."
         )
     return "You are a senior copywriter for Ring."
@@ -265,7 +286,7 @@ def build_system_prompt_text_variant(
         f"{build_variant_opening(variant)}\n\n"
         f"BRAND GUIDELINES:\n{ring_brand_guidelines}\n\n"
         f"APPROVED TEMPLATE PATTERNS:\n{approved_copy_template}\n\n"
-        "CONTENT CLASSIFICATION (from the Excel row):\n"
+        "CONTENT CLASSIFICATION (from the Excel row or workbook excerpt):\n"
         f"{content_data}\n\n"
         "AUTHORING CONTEXT:\n"
         f"- Base Prompt: {base_prompt}\n"
@@ -273,7 +294,7 @@ def build_system_prompt_text_variant(
         f"- Guardrails: {guardrails}\n\n"
         f"{build_output_requirements_json(variant)}\n\n"
         "LANGUAGE REQUIREMENT: Use UK English spelling, grammar, and phrasing consistently "
-
+        "(e.g., 'organisation' not 'organization', 'colour' not 'color', 'optimise' not 'optimize')."
     )
     return system_prompt
 
@@ -341,6 +362,7 @@ ss.setdefault("first_sheet_name", None)
 ss.setdefault("uploaded_bytes", None)
 ss.setdefault("uploaded_name", None)
 ss.setdefault("selected_variant", "ring")
+ss.setdefault("use_specific_pui", False)
 
 # Pre-load defaults for all modes (so switching has values ready)
 for _mode, ctx in DEFAULT_CONTEXT.items():
@@ -426,7 +448,7 @@ if logo_path:
     st.image(logo_path, width=200)
 
 st.title("Ring CopyForge")
-st.caption("Upload your Excel in the sidebar, pick a Product Unique Identifier, choose a prompt mode, tweak the authoring context, and then generate.")
+st.caption("Upload your Excel in the sidebar, pick a Product Unique Identifier (optionally via Advanced), choose a prompt mode, tweak the authoring context, and then generate.")
 
 # Preview
 if ss.preview_visible and ss.first_df is not None:
@@ -442,35 +464,51 @@ elif not ss.file_loaded:
 else:
     st.info("Preview is hidden. Click **Show** in the sidebar to display the Excel preview.")
 
-# ---------- PUI SECTION ----------
-st.markdown("### 🔎 Select Product Unique Identifier")
-if ss.first_df is not None and not ss.first_df.empty:
-    cols_list = [str(c) for c in ss.first_df.columns]
-    selected_id_col = st.selectbox("Column", cols_list, key="id_col", disabled=not ss.file_loaded)
+# ---------- ADVANCED: Optional PUI Selection ----------
+st.markdown("### ⚙️ Advanced")
+with st.expander("Advanced options", expanded=False):
+    st.caption("Optionally target a specific row by Product Unique Identifier. If disabled, the entire Excel workbook will be sent as context to the model.")
+    ss.use_specific_pui = st.checkbox(
+        "Select a specific Product Unique Identifier",
+        value=ss.use_specific_pui,
+        help="Enable to specify a column and value; otherwise the LLM sees a compact excerpt of the entire workbook."
+    )
 
-    if ss.file_loaded:
-        id_vals = (
-            ss.first_df[selected_id_col]
-            .apply(coerce_str)
-            .apply(lambda s: s.strip())
-            .replace("", pd.NA)
-            .dropna()
-            .unique()
-            .tolist()
-        )
-        selected_id_val = st.selectbox(
-            "Value",
-            sorted(id_vals, key=lambda x: (x.lower(), x)) if id_vals else [],
-            key="id_val",
-            disabled=not ss.file_loaded
-        ) if id_vals else None
+    if ss.use_specific_pui:
+        st.markdown("#### 🔎 Select Product Unique Identifier")
+        if ss.first_df is not None and not ss.first_df.empty:
+            cols_list = [str(c) for c in ss.first_df.columns]
+            # Let Streamlit manage keys; do not assign back to session_state
+            st.selectbox("Column", cols_list, key="id_col", disabled=not ss.file_loaded)
+
+            selected_col = st.session_state.get("id_col")
+            if ss.file_loaded and selected_col:
+                id_vals = (
+                    ss.first_df[selected_col]
+                    .apply(coerce_str)
+                    .apply(lambda s: s.strip())
+                    .replace("", pd.NA)
+                    .dropna()
+                    .unique()
+                    .tolist()
+                )
+                st.selectbox(
+                    "Value",
+                    sorted(id_vals, key=lambda x: (x.lower(), x)) if id_vals else [],
+                    key="id_val",
+                    disabled=not ss.file_loaded
+                )
+            else:
+                st.caption("Upload or load a file to enable the selectors.")
+        else:
+            st.selectbox("Column", [], key="id_col", disabled=True)
+            st.selectbox("Value", [], key="id_val", disabled=True)
+            st.caption("No data loaded yet. Use the sidebar to upload or load the default file.")
     else:
-        selected_id_val = None
-        st.caption("Upload or load a file to enable the selectors.")
-else:
-    selected_id_col = st.selectbox("Column", [], key="id_col", disabled=True)
-    selected_id_val = st.selectbox("Value", [], key="id_val", disabled=True)
-    st.caption("No data loaded yet. Use the sidebar to upload or load the default file.")
+        # Safely clear keys managed by widgets (avoid assigning None to widget keys)
+        st.session_state.pop("id_col", None)
+        st.session_state.pop("id_val", None)
+        st.info("Advanced targeting is **off**. The model will receive a compact excerpt of the entire workbook as context.")
 
 # ---------- PROMPT MODE PICKER (loads defaults on click) ----------
 st.markdown("### 🎛️ Choose Prompt Mode")
@@ -523,10 +561,8 @@ if go:
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         st.error("Missing OPENAI_API_KEY.")
-    elif not (ss.file_loaded and ss.first_df is not None):
+    elif not (ss.file_loaded and ss.first_df is not None and ss.xls is not None):
         st.error("Use the **sidebar**: upload or use default, then click **Show** at least once to load the file.")
-    elif not selected_id_col or not selected_id_val:
-        st.error("Please select both Product Unique Identifier column and value.")
     elif not ss.selected_variant:
         st.error("Please choose a Prompt Mode above before generating.")
     else:
@@ -534,13 +570,88 @@ if go:
         additional_context = ss.get(extra_key, DEFAULT_CONTEXT[active_mode]["additional_context"])
         guardrails = ss.get(guard_key, DEFAULT_CONTEXT[active_mode]["guardrails"])
 
-        mask = ss.first_df[selected_id_col].apply(coerce_str).str.strip() == coerce_str(selected_id_val).strip()
-        if not mask.any():
-            st.error("No matching row found.")
+        auto_guidelines, auto_template = try_autodetect_long_text(ss.xls)
+
+        # Branch: Advanced ON (specific row) vs OFF (entire workbook excerpt)
+        if ss.use_specific_pui:
+            selected_col = st.session_state.get("id_col")
+            selected_val = st.session_state.get("id_val")
+            if not selected_col or not selected_val:
+                st.error("Advanced mode is enabled. Please select both a Product Unique Identifier column and value.")
+            else:
+                mask = ss.first_df[selected_col].apply(coerce_str).str.strip() == coerce_str(selected_val).strip()
+                if not mask.any():
+                    st.error("No matching row found for the selected Product Unique Identifier.")
+                else:
+                    row = ss.first_df[mask].iloc[0]
+                    content_data = row_to_content_data(row)
+
+                    system_prompt = build_system_prompt_text_variant(
+                        variant=ss.selected_variant,
+                        ring_brand_guidelines=auto_guidelines,
+                        approved_copy_template=auto_template,
+                        content_data=content_data,
+                        base_prompt=base_prompt,
+                        additional_context=additional_context,
+                        guardrails=guardrails,
+                        PDF_CONTEXT_CHARS=PDF_CONTEXT_CHARS_DEFAULT
+                    )
+
+                    with st.spinner(f"Generating ({label_map[ss.selected_variant]})..."):
+                        results = get_enhanced_openai_response(
+                            get_openai_client(api_key),
+                            system_prompt,
+                            expected_fields=VARIANT_FIELDS[ss.selected_variant],
+                            model=DEFAULT_MODEL,
+                            n=NUM_VARIATIONS
+                        )
+                    st.success(f"{label_map[ss.selected_variant]}: Generated {len(results)} variation(s)")
+
+                    for i, result in enumerate(results, 1):
+                        if 'error' in result:
+                            st.error(f"{label_map[ss.selected_variant]} — Variation {i}: {result['error']}")
+                            if 'raw' in result:
+                                with st.expander(f"{label_map[ss.selected_variant]} — Raw {i}"):
+                                    st.code(result['raw'])
+                            continue
+
+                        if ss.selected_variant == "ring":
+                            with st.expander(f"{label_map[ss.selected_variant]} — 📝 Variation {i}", expanded=(i == 1)):
+                                st.text_area("Title", result.get("Content_Title", ""), key=f"{ss.selected_variant}_title_{i}")
+                                st.text_area("Body", result.get("Content_Body", ""), key=f"{ss.selected_variant}_body_{i}")
+                                st.text_input("Headlines (pipe-separated)", result.get("Headline_Variants", ""), key=f"{ss.selected_variant}_head_{i}")
+                                cA, cB = st.columns(2)
+                                with cA:
+                                    st.text_input("Primary Keywords", result.get("Keywords_Primary", ""), key=f"{ss.selected_variant}_kw1_{i}")
+                                with cB:
+                                    st.text_input("Secondary Keywords", result.get("Keywords_Secondary", ""), key=f"{ss.selected_variant}_kw2_{i}")
+                                st.text_area("Description", result.get("Description", ""), key=f"{ss.selected_variant}_desc_{i}")
+
+                        elif ss.selected_variant == "social":
+                            with st.expander(f"{label_map[ss.selected_variant]} — 📣 Variation {i}", expanded=(i == 1)):
+                                st.text_area("Hashtags", result.get("Hashtags", ""), key=f"{ss.selected_variant}_hashtags_{i}")
+                                st.text_area("Engagement Hook", result.get("Engagement_Hook", ""), key=f"{ss.selected_variant}_hook_{i}")
+                                st.text_area("Clear Value Proposition", result.get("Value_Prop", ""), key=f"{ss.selected_variant}_vp_{i}")
+                                st.text_area("Address Missed Deliveries & Absence Concerns", result.get("Address_Concerns", ""), key=f"{ss.selected_variant}_concerns_{i}")
+                                st.text_area("Content", result.get("Content", ""), key=f"{ss.selected_variant}_content_{i}")
+
+                        elif ss.selected_variant == "email":
+                            with st.expander(f"{label_map[ss.selected_variant]} — ✉️ Variation {i}", expanded=(i == 1)):
+                                st.text_input("Subject Line", result.get("Subject_Line", ""), key=f"{ss.selected_variant}_subj_{i}")
+                                st.text_input("Greeting", result.get("Greeting", ""), key=f"{ss.selected_variant}_greet_{i}")
+                                st.text_area("Main Content (100-150 words)", result.get("Main_Content", ""), key=f"{ss.selected_variant}_main_{i}")
+                                st.text_input("Reference", result.get("Reference", ""), key=f"{ss.selected_variant}_ref_{i}")
+
+                        elif ss.selected_variant == "audience":
+                            with st.expander(f"{label_map[ss.selected_variant]} — 🧩 Variation {i}", expanded=(i == 1)):
+                                st.text_area("Emphasise easy installation & self-setup", result.get("Easy_Installation_Self_Setup", ""), key=f"{ss.selected_variant}_install_{i}")
+                                st.text_area("Highlight technical features & control", result.get("Technical_Features_and_Control", ""), key=f"{ss.selected_variant}_features_{i}")
+                                st.text_area("Include technical specifications", result.get("Technical_Specifications", ""), key=f"{ss.selected_variant}_specs_{i}")
+                                st.text_area("Maintain security benefits messaging", result.get("Security_Benefits_Messaging", ""), key=f"{ss.selected_variant}_security_{i}")
+
         else:
-            row = ss.first_df[mask].iloc[0]
-            content_data = row_to_content_data(row)
-            auto_guidelines, auto_template = try_autodetect_long_text(ss.xls)
+            # Advanced OFF → give the whole workbook (excerpt) to the model
+            content_data = workbook_excerpt_for_llm(ss.xls, rows_per_sheet=50, char_limit=PDF_CONTEXT_CHARS_DEFAULT)
 
             system_prompt = build_system_prompt_text_variant(
                 variant=ss.selected_variant,
@@ -561,54 +672,55 @@ if go:
                     model=DEFAULT_MODEL,
                     n=NUM_VARIATIONS
                 )
-                st.success(f"{label_map[ss.selected_variant]}: Generated {len(results)} variation(s)")
+            st.success(f"{label_map[ss.selected_variant]}: Generated {len(results)} variation(s)")
 
-                for i, result in enumerate(results, 1):
-                    if 'error' in result:
-                        st.error(f"{label_map[ss.selected_variant]} — Variation {i}: {result['error']}")
-                        if 'raw' in result:
-                            with st.expander(f"{label_map[ss.selected_variant]} — Raw {i}"):
-                                st.code(result['raw'])
-                        continue
+            for i, result in enumerate(results, 1):
+                if 'error' in result:
+                    st.error(f"{label_map[ss.selected_variant]} — Variation {i}: {result['error']}")
+                    if 'raw' in result:
+                        with st.expander(f"{label_map[ss.selected_variant]} — Raw {i}"):
+                            st.code(result['raw'])
+                    continue
 
-                    if ss.selected_variant == "ring":
-                        with st.expander(f"{label_map[ss.selected_variant]} — 📝 Variation {i}", expanded=(i == 1)):
-                            st.text_area("Title", result.get("Content_Title", ""), key=f"{ss.selected_variant}_title_{i}")
-                            st.text_area("Body", result.get("Content_Body", ""), key=f"{ss.selected_variant}_body_{i}")
-                            st.text_input("Headlines (pipe-separated)", result.get("Headline_Variants", ""), key=f"{ss.selected_variant}_head_{i}")
-                            cA, cB = st.columns(2)
-                            with cA:
-                                st.text_input("Primary Keywords", result.get("Keywords_Primary", ""), key=f"{ss.selected_variant}_kw1_{i}")
-                            with cB:
-                                st.text_input("Secondary Keywords", result.get("Keywords_Secondary", ""), key=f"{ss.selected_variant}_kw2_{i}")
-                            st.text_area("Description", result.get("Description", ""), key=f"{ss.selected_variant}_desc_{i}")
+                if ss.selected_variant == "ring":
+                    with st.expander(f"{label_map[ss.selected_variant]} — 📝 Variation {i}", expanded=(i == 1)):
+                        st.text_area("Title", result.get("Content_Title", ""), key=f"{ss.selected_variant}_title_{i}")
+                        st.text_area("Body", result.get("Content_Body", ""), key=f"{ss.selected_variant}_body_{i}")
+                        st.text_input("Headlines (pipe-separated)", result.get("Headline_Variants", ""), key=f"{ss.selected_variant}_head_{i}")
+                        cA, cB = st.columns(2)
+                        with cA:
+                            st.text_input("Primary Keywords", result.get("Keywords_Primary", ""), key=f"{ss.selected_variant}_kw1_{i}")
+                        with cB:
+                            st.text_input("Secondary Keywords", result.get("Keywords_Secondary", ""), key=f"{ss.selected_variant}_kw2_{i}")
+                        st.text_area("Description", result.get("Description", ""), key=f"{ss.selected_variant}_desc_{i}")
 
-                    elif ss.selected_variant == "social":
-                        with st.expander(f"{label_map[ss.selected_variant]} — 📣 Variation {i}", expanded=(i == 1)):
-                            st.text_area("Hashtags", result.get("Hashtags", ""), key=f"{ss.selected_variant}_hashtags_{i}")
-                            st.text_area("Engagement Hook", result.get("Engagement_Hook", ""), key=f"{ss.selected_variant}_hook_{i}")
-                            st.text_area("Clear Value Proposition", result.get("Value_Prop", ""), key=f"{ss.selected_variant}_vp_{i}")
-                            st.text_area("Address Missed Deliveries & Absence Concerns", result.get("Address_Concerns", ""), key=f"{ss.selected_variant}_concerns_{i}")
-                            st.text_area("Content", result.get("Content", ""), key=f"{ss.selected_variant}_content_{i}")
+                elif ss.selected_variant == "social":
+                    with st.expander(f"{label_map[ss.selected_variant]} — 📣 Variation {i}", expanded=(i == 1)):
+                        st.text_area("Hashtags", result.get("Hashtags", ""), key=f"{ss.selected_variant}_hashtags_{i}")
+                        st.text_area("Engagement Hook", result.get("Engagement_Hook", ""), key=f"{ss.selected_variant}_hook_{i}")
+                        st.text_area("Clear Value Proposition", result.get("Value_Prop", ""), key=f"{ss.selected_variant}_vp_{i}")
+                        st.text_area("Address Missed Deliveries & Absence Concerns", result.get("Address_Concerns", ""), key=f"{ss.selected_variant}_concerns_{i}")
+                        st.text_area("Content", result.get("Content", ""), key=f"{ss.selected_variant}_content_{i}")
 
-                    elif ss.selected_variant == "email":
-                        with st.expander(f"{label_map[ss.selected_variant]} — ✉️ Variation {i}", expanded=(i == 1)):
-                            st.text_input("Subject Line", result.get("Subject_Line", ""), key=f"{ss.selected_variant}_subj_{i}")
-                            st.text_input("Greeting", result.get("Greeting", ""), key=f"{ss.selected_variant}_greet_{i}")
-                            st.text_area("Main Content (100-150 words)", result.get("Main_Content", ""), key=f"{ss.selected_variant}_main_{i}")
-                            st.text_input("Reference", result.get("Reference", ""), key=f"{ss.selected_variant}_ref_{i}")
+                elif ss.selected_variant == "email":
+                    with st.expander(f"{label_map[ss.selected_variant]} — ✉️ Variation {i}", expanded=(i == 1)):
+                        st.text_input("Subject Line", result.get("Subject_Line", ""), key=f"{ss.selected_variant}_subj_{i}")
+                        st.text_input("Greeting", result.get("Greeting", ""), key=f"{ss.selected_variant}_greet_{i}")
+                        st.text_area("Main Content (100-150 words)", result.get("Main_Content", ""), key=f"{ss.selected_variant}_main_{i}")
+                        st.text_input("Reference", result.get("Reference", ""), key=f"{ss.selected_variant}_ref_{i}")
 
-                    elif ss.selected_variant == "audience":
-                        with st.expander(f"{label_map[ss.selected_variant]} — 🧩 Variation {i}", expanded=(i == 1)):
-                            st.text_area("Emphasize easy installation & self-setup", result.get("Easy_Installation_Self_Setup", ""), key=f"{ss.selected_variant}_install_{i}")
-                            st.text_area("Highlight technical features & control", result.get("Technical_Features_and_Control", ""), key=f"{ss.selected_variant}_features_{i}")
-                            st.text_area("Include technical specifications", result.get("Technical_Specifications", ""), key=f"{ss.selected_variant}_specs_{i}")
-                            st.text_area("Maintain security benefits messaging", result.get("Security_Benefits_Messaging", ""), key=f"{ss.selected_variant}_security_{i}")
-st.markdown("---")  # divider
-st.markdown(
-    "<span style='color:green'>DISCLAIMER: All generated copy should be reviewed and approved by one of our "
-    "in-house copywriters and where applicable, legal counsel before publication or use. "
+                elif ss.selected_variant == "audience":
+                    with st.expander(f"{label_map[ss.selected_variant]} — 🧩 Variation {i}", expanded=(i == 1)):
+                        st.text_area("Emphasise easy installation & self-setup", result.get("Easy_Installation_Self_Setup", ""), key=f"{ss.selected_variant}_install_{i}")
+                        st.text_area("Highlight technical features & control", result.get("Technical_Features_and_Control", ""), key=f"{ss.selected_variant}_features_{i}")
+                        st.text_area("Include technical specifications", result.get("Technical_Specifications", ""), key=f"{ss.selected_variant}_specs_{i}")
+                        st.text_area("Maintain security benefits messaging", result.get("Security_Benefits_Messaging", ""), key=f"{ss.selected_variant}_security_{i}")
+
+# ====================== FOOTER DISCLAIMER ======================
+st.markdown("---")  # divider for separation
+st.warning(
+    "DISCLAIMER: All generated copy should be reviewed and approved by one of our "
+    "in-house copywriters and, where applicable, legal counsel before publication or use. "
     "This content is provided as a starting point and may require modifications to ensure "
-    "accuracy, compliance with relevant regulations, and alignment with our brand voice.</span>",
-    unsafe_allow_html=True
+    "accuracy, compliance with relevant regulations, and alignment with our brand voice."
 )
