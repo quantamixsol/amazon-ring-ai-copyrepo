@@ -271,7 +271,9 @@ def build_system_prompt_text_variant(
         f"- Base Prompt: {base_prompt}\n"
         f"- Additional Context: {additional_context}\n"
         f"- Guardrails: {guardrails}\n\n"
-        f"{build_output_requirements_json(variant)}"
+        f"{build_output_requirements_json(variant)}\n\n"
+        "LANGUAGE REQUIREMENT: Use UK English spelling, grammar, and phrasing consistently "
+
     )
     return system_prompt
 
@@ -326,7 +328,7 @@ def load_excel_sheets(file_buffer: BytesIO, filename: str) -> dict:
 
 # ---- Page config ----
 icon = next((p for p in LOGO_CANDIDATES if os.path.exists(p)), "")
-st.set_page_config(page_title="Ring Copy Generator", page_icon=icon, layout="wide")
+st.set_page_config(page_title="Ring CopyForge", page_icon=icon, layout="wide")
 
 # ---- Session state ----
 ss = st.session_state
@@ -423,7 +425,7 @@ logo_path = get_logo_path()
 if logo_path:
     st.image(logo_path, width=200)
 
-st.title("Ring Copy Generator — Text Variations")
+st.title("Ring CopyForge")
 st.caption("Upload your Excel in the sidebar, pick a Product Unique Identifier, choose a prompt mode, tweak the authoring context, and then generate.")
 
 # Preview
@@ -602,3 +604,11 @@ if go:
                             st.text_area("Highlight technical features & control", result.get("Technical_Features_and_Control", ""), key=f"{ss.selected_variant}_features_{i}")
                             st.text_area("Include technical specifications", result.get("Technical_Specifications", ""), key=f"{ss.selected_variant}_specs_{i}")
                             st.text_area("Maintain security benefits messaging", result.get("Security_Benefits_Messaging", ""), key=f"{ss.selected_variant}_security_{i}")
+st.markdown("---")  # divider
+st.markdown(
+    "<span style='color:green'>DISCLAIMER: All generated copy should be reviewed and approved by one of our "
+    "in-house copywriters and where applicable, legal counsel before publication or use. "
+    "This content is provided as a starting point and may require modifications to ensure "
+    "accuracy, compliance with relevant regulations, and alignment with our brand voice.</span>",
+    unsafe_allow_html=True
+)
