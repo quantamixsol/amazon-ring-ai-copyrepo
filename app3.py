@@ -530,7 +530,6 @@ def get_enhanced_response(
         return get_enhanced_perplexity_response(
             prompt=prompt,
             expected_fields=expected_fields,
-            model=model,
             n=n
         )
      
