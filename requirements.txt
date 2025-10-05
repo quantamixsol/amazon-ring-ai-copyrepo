@@ -3,4 +3,6 @@ pandas
 openai
 PyPDF2
 python-dotenv
+perplexityai
 openpyxl
+boto3

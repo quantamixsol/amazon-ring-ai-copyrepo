@@ -1,7 +1,8 @@
 # app.py
 # Streamlit app: Generate Ring copy (TEXT variations) from an Excel template + Product Unique Identifier dropdown
-# Deps: streamlit, pandas, openpyxl, (optional) xlrd==1.2.0 for .xls, python-dotenv, openai
+# Deps: streamlit, pandas, openpyxl, (optional) xlrd==1.2.0 for .xls, python-dotenv, openai, requests
 # Optional for PDF text fallback: PyPDF2
+import base64
 
 import os
 import json
@@ -10,21 +11,27 @@ import streamlit as st
 from dotenv import load_dotenv
 from io import BytesIO
 from typing import Optional, List, Dict
-
+from perplexity import Perplexity
+import boto3
 # ---- Load .env (optional) ----
 load_dotenv()
+perplexity_api_key=os.getenv("PERPLEXITY_API_KEY")
+client = Perplexity(api_key=perplexity_api_key)
 
 # ---- Constants ----
-DEFAULT_MODEL = "gpt-5"  # use with Chat Completions; Responses uses this too
+DEFAULT_PROVIDER = "OpenAI"      # "OpenAI" | "Perplexity"
+OPENAI_DEFAULT_MODEL = "gpt-5"   # works with Responses + Chat Completions
+PERPLEXITY_DEFAULT_MODEL = "sonar-pro"  # Perplexity chat-completions
+AMAZON_CLAUDE_DEFAULT_MODEL = "Claude Sonnet 4"
 PDF_CONTEXT_CHARS_DEFAULT = 16000
 NUM_VARIATIONS = 3
 
 # Default Excel path fallback
 DEFAULT_EXCEL_PATH = "Ring_Copy_Solution_Enhanced_with_Clownfish_Jellyfish_and_Needlefish.xlsx"
 
-# --- PDF attachment settings ---
-PDF_FILENAME = "Ring Copy Guidelines International 2025.pdf"           # expected local file
-ENABLE_PDF_ATTACHMENT = True     # try attaching via Files + Responses API
+# --- PDF attachment settings (OpenAI only) ---
+PDF_FILENAME = "Ring Copy Guidelines International 2025.pdf"   # expected local file
+ENABLE_PDF_ATTACHMENT = True     # try attaching via Files + Responses API (OpenAI only)
 ENABLE_PDF_TEXT_FALLBACK = True  # if file upload fails, optionally inline text (requires PyPDF2)
 
 # ---------------- Helpers ----------------
@@ -244,7 +251,7 @@ def get_openai_client(api_key: str = None):
     from openai import OpenAI
     return OpenAI(api_key=api_key) if api_key else OpenAI()
 
-# ---------- PDF attach + fallback ----------
+# ---------- PDF attach + fallback (OpenAI only) ----------
 def upload_pdf_and_get_file_id(client, pdf_path: str) -> Optional[str]:
     try:
         if not (ENABLE_PDF_ATTACHMENT and os.path.exists(pdf_path)):
@@ -275,12 +282,12 @@ def extract_pdf_text_fallback(pdf_path: str, max_chars: int = 12000) -> str:
     except Exception:
         return ""
 
-# ---------- Core generation ----------
+# ---------- Core generation: OpenAI ----------
 def get_enhanced_openai_response(
     client,
     prompt: str,
     expected_fields: List[str],
-    model: str = DEFAULT_MODEL,
+    model: str,
     n: int = 1,
     pdf_file_id: Optional[str] = None
 ):
@@ -295,11 +302,11 @@ def get_enhanced_openai_response(
                     input=[{
                         "role": "user",
                         "content": [
-                            {"type": "input_text", "text": "Generate the copy now following all requirements exactly."},
+                            {"type": "input_text", "text": "Generate the copy now following all requirements exactly. Return JSON only."},
                             {"type": "input_file", "file_id": pdf_file_id}
                         ]
                     }],
-                    # response_format={"type": "json_object"},
+                    # You can also add: response_format={"type": "json_object"}
                 )
                 content_text = resp.output_text
                 try:
@@ -317,11 +324,11 @@ def get_enhanced_openai_response(
             model=model,
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": "Generate the copy now following all requirements exactly."}
+                {"role": "user", "content": "Generate the copy now following all requirements exactly. Return JSON only."}
             ],
             response_format={"type": "json_object"},
             n=n,
-            max_completion_tokens=8000
+            max_tokens=8000  # FIXED: was max_completion_tokens
         )
         for choice in response.choices:
             try:
@@ -337,6 +344,226 @@ def get_enhanced_openai_response(
 
     except Exception as e:
         return [{"error": str(e)}]
+
+with open("Ring Copy Guidelines International 2025.pdf", "rb") as file:
+    file_data = file.read()
+    encoded_file = base64.b64encode(file_data).decode('utf-8')
+
+
+# ---------- Core generation: Perplexity ----------
+def get_enhanced_perplexity_response(
+    prompt: str,
+    expected_fields: List[str],
+    n: int = 1
+):
+    """Perplexity chat.completions; no file inputs supported here."""
+   
+    print(f"using perplexity model")
+    base_messages =[
+        {"role": "system", "content": [{"type":"text","text":f"{prompt}\n\n Do NOT wrap the output in markdown or code fences (no \`\`\`json, no backticks, no quotes before/after).Start with {{ and end with }}."}]},
+
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Generate the copy now following all requirements exactly. Return JSON only"
+                },
+                {
+                    "type": "file_url",
+                    "file_url": {
+                        "url": encoded_file,  # Just the base64 string, no prefix
+                        "file_name": "Ring Copy Guidelines International 2025.pdf"
+                    }
+                }
+            ]
+        }
+    ]
+    results = []
+    for _ in range(max(1, n)):
+        try:
+            completion = client.chat.completions.create(
+                model = "sonar-pro",
+                messages = base_messages
+            )
+            content = completion.choices[0].message.content
+            try:
+                parsed = json.loads(content)
+                if all(field in parsed for field in expected_fields):
+                    results.append(parsed)
+                else:
+                    results.append({"error": "Missing fields", "raw": content})
+            except json.JSONDecodeError:
+                results.append({"error": "Invalid JSON", "raw": content})
+        except Exception as e:
+            results.append({"error": str(e)})
+    return results
+
+def get_enhanced_openai_response(
+    client,
+    prompt: str,
+    expected_fields: List[str],
+    model: str,
+    n: int = 1,
+    pdf_file_id: Optional[str] = None
+):
+    print(f"calling openai model")
+    results = []
+    try:
+        if pdf_file_id:
+            # Responses API with file input
+            for _ in range(n):
+                resp = client.responses.create(
+                    model=model,
+                    instructions=prompt,
+                    input=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Generate the copy now following all requirements exactly. Return JSON only."},
+                            {"type": "input_file", "file_id": pdf_file_id}
+                        ]
+                    }],
+                    # You can also add: response_format={"type": "json_object"}
+                )
+                content_text = resp.output_text
+                try:
+                    parsed = json.loads(content_text)
+                    if all(field in parsed for field in expected_fields):
+                        results.append(parsed)
+                    else:
+                        results.append({"error": "Missing fields", "raw": content_text})
+                except json.JSONDecodeError:
+                    results.append({"error": "Invalid JSON", "raw": content_text})
+            return results
+
+        # Chat Completions fallback (no file input)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "Generate the copy now following all requirements exactly. Return JSON only."}
+            ],
+            response_format={"type": "json_object"},
+            n=n,
+            max_tokens=8000  # FIXED: was max_completion_tokens
+        )
+        for choice in response.choices:
+            try:
+                content = choice.message.content
+                parsed = json.loads(content)
+                if all(field in parsed for field in expected_fields):
+                    results.append(parsed)
+                else:
+                    results.append({"error": "Missing fields", "raw": content})
+            except json.JSONDecodeError:
+                results.append({"error": "Invalid JSON", "raw": choice.message.content})
+        return results
+
+    except Exception as e:
+        return [{"error": str(e)}]
+
+with open("Ring Copy Guidelines International 2025.pdf", "rb") as file:
+    file_data = file.read()
+    encoded_file = base64.b64encode(file_data).decode('utf-8')
+
+
+# ---------- Core generation: Perplexity ----------
+def get_enhanced_amazon_response(
+    prompt: str,
+    expected_fields: List[str],
+    n: int = 1
+):
+    """Perplexity chat.completions; no file inputs supported here."""
+   
+    print(f"calling Amazon model ")
+    
+    with open("Ring Copy Guidelines International 2025.pdf", "rb") as f:
+        pdf_bytes = f.read()
+   
+    system=[{"text":f"{prompt}\n\n Do NOT wrap the output in markdown or code fences (no \`\`\`json, no backticks, no quotes before/after).Start with {{ and end with }}."}]
+    message = [ 
+               {
+                   "role": "user",
+                    "content": [
+                            {   
+                             "document":{"format":"pdf", "name":"Ring Copy Guidelines International 2025", "source":{"bytes":pdf_bytes}}
+                            },
+                            {
+                                "text": "Generate the copy now following all requirements exactly. Return JSON only"
+                            } 
+                        ]
+                    }
+               ]
+
+    results = []
+    for _ in range(max(1, n)):
+        try:
+            bedrock_client = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
+            response = bedrock_client.converse(modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",messages=message,system=system)
+
+            output = response["output"]["message"]["content"]        
+            content = output[0].get("text", {})
+            try:
+                parsed = json.loads(content)
+                if all(field in parsed for field in expected_fields):
+                    results.append(parsed)
+                else:
+                    results.append({"error": "Missing fields", "raw": content})
+            except json.JSONDecodeError:
+                results.append({"error": "Invalid JSON", "raw": content})
+        except Exception as e:
+            results.append({"error": str(e)})
+    return results
+
+# ---------- Unified switch ----------
+def get_enhanced_response(
+    provider: str,
+    openai_client,  # may be None for Perplexity
+    prompt: str,
+    expected_fields: List[str],
+    model: str,
+    n: int = 1,
+    pdf_file_id: Optional[str] = None
+):
+    if provider == "Perplexity":
+        # Perplexity does not support file attach in this flow; ignore pdf_file_id
+        return get_enhanced_perplexity_response(
+            prompt=prompt,
+            expected_fields=expected_fields,
+            model=model,
+            n=n
+        )
+     
+    elif provider == "Amazon Claude":
+        return get_enhanced_amazon_response(
+            prompt=prompt,
+            expected_fields=expected_fields,
+            n=n
+        )    
+    # OpenAI
+    return get_enhanced_openai_response(
+        client=openai_client,
+        prompt=prompt,
+        expected_fields=expected_fields,
+        model=model,
+        n=n,
+        pdf_file_id=pdf_file_id
+    )
+
+def total_chars_for_result(result: dict, fields: Optional[List[str]] = None) -> int:
+    """
+    Sum character lengths of selected JSON fields for a given variation.
+    Falls back to all str/int/float values if fields is None.
+    """
+    if not isinstance(result, dict):
+        return 0
+    if fields:
+        return sum(len(coerce_str(result.get(f, ""))) for f in fields)
+    # fallback: count over string-like values
+    return sum(len(coerce_str(v)) for v in result.values() if isinstance(v, (str, int, float)))
+
+def get_pdf_b64_from_bytes(pdf_bytes: Optional[bytes]) -> str:
+    return base64.b64encode(pdf_bytes).decode("utf-8") if pdf_bytes else ""
 
 def load_excel_sheets(file_buffer: BytesIO, filename: str) -> dict:
     ext = os.path.splitext(filename)[1].lower()
@@ -366,6 +593,12 @@ ss.setdefault("uploaded_bytes", None)
 ss.setdefault("uploaded_name", None)
 ss.setdefault("selected_variant", "ring")
 ss.setdefault("use_specific_pui", False)
+
+# provider/model
+ss.setdefault("provider", DEFAULT_PROVIDER)
+ss.setdefault("model_openai", OPENAI_DEFAULT_MODEL)
+ss.setdefault("model_perplexity", PERPLEXITY_DEFAULT_MODEL)
+ss.setdefault("model_amazon_claude", AMAZON_CLAUDE_DEFAULT_MODEL)
 
 # feedback state (TEXT ONLY)
 ss.setdefault("feedback_text", "")
@@ -408,6 +641,19 @@ if not ss.initialized:
 with st.sidebar:
     st.header("📁 Source & Controls")
 
+    # Provider + Model selectors
+    ss.provider = st.selectbox("Provider", [ "Amazon Claude", "OpenAI", "Perplexity"])
+    if ss.provider == "OpenAI":
+        openai_models = "gpt-5"
+        ss.model_openai = st.text(f"Model Using : {openai_models}")
+    
+    elif ss.provider == "Amazon Claude":
+        amazon_claude_model = "Claude Sonnet 4"
+        ss.model_amazon_claude = st.text(f"Model Using : {amazon_claude_model}")
+        
+    else:
+        perplexity_models = "sonar-pro"
+        ss.model_perplexity = st.text(f"Model Using : {perplexity_models}")
     uploaded = st.file_uploader("Upload (.xlsx / .xlsm)", type=["xlsx", "xlsm"],
                                 help="Clear this to fall back to the default Excel")
 
@@ -453,8 +699,9 @@ with st.sidebar:
 
     if hide_clicked:
         ss.preview_visible = False
-        
-    st.text("Attached Ring Copy Guidelines International 2025.pdf")    
+
+    # PDF attach line (note: Perplexity path won't use it)
+    st.text("Attached Ring Copy Guidelines International 2025.pdf")
 
 # ====================== MAIN ======================
 
@@ -463,7 +710,7 @@ if logo_path:
     st.image(logo_path, width=200)
 
 st.title("Ring CopyForge")
-st.caption("Upload your Excel in the sidebar, pick a Product Unique Identifier (optionally via Advanced), choose a prompt mode, tweak the authoring context, and then generate.")
+st.caption("Upload your Excel in the sidebar, pick a Product Unique Identifier (optionally via Advanced), choose a prompt mode, tweak the authoring context, select provider/model, and then generate.")
 
 # Preview
 if ss.preview_visible and ss.first_df is not None:
@@ -548,10 +795,26 @@ st.text_area("Guardrails", key=guard_key, height=110)
 go = st.button("Generate Variations", use_container_width=True)
 
 def run_generation(user_feedback: str = ""):
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
-        st.error("Missing OPENAI_API_KEY.")
-        return
+    provider = ss.provider
+    model = ss.model_amazon_claude 
+    if provider =="OpenAi":
+        model=ss.model_openai
+    elif provider == "Perplexity":
+        model = ss.model_perplexity    
+    print(f"provider is {provider} and model {model}")
+    # API key checks
+    if provider == "OpenAI":
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            st.error("Missing OPENAI_API_KEY.")
+            return
+        client = get_openai_client(api_key)
+    else:
+        if not os.getenv("PERPLEXITY_API_KEY", ""):
+            st.error("Missing PERPLEXITY_API_KEY.")
+            return
+        client = None  # not used for Perplexity
+
     if not (ss.file_loaded and ss.first_df is not None and ss.xls is not None):
         st.error("Use the **sidebar**: upload or use default, then click **Show** at least once to load the file.")
         return
@@ -565,13 +828,14 @@ def run_generation(user_feedback: str = ""):
 
     auto_guidelines, auto_template = try_autodetect_long_text(ss.xls)
 
-    client = get_openai_client(api_key)
+    # OpenAI-only PDF attach/fallback (skipped for Perplexity)
     pdf_file_id = None
     pdf_excerpt = ""
-    if ENABLE_PDF_ATTACHMENT:
-        pdf_file_id = upload_pdf_and_get_file_id(client, PDF_FILENAME)
-    if not pdf_file_id and ENABLE_PDF_TEXT_FALLBACK:
-        pdf_excerpt = extract_pdf_text_fallback(PDF_FILENAME, max_chars=8000)
+    if provider == "OpenAI":
+        if ENABLE_PDF_ATTACHMENT:
+            pdf_file_id = upload_pdf_and_get_file_id(client, PDF_FILENAME)
+        if not pdf_file_id and ENABLE_PDF_TEXT_FALLBACK:
+            pdf_excerpt = extract_pdf_text_fallback(PDF_FILENAME, max_chars=8000)
 
     # Build content data
     if ss.use_specific_pui:
@@ -599,25 +863,29 @@ def run_generation(user_feedback: str = ""):
         guardrails=guardrails,
         PDF_CONTEXT_CHARS=PDF_CONTEXT_CHARS_DEFAULT,
         user_feedback=user_feedback.strip(),
-        pdf_text_excerpt=pdf_excerpt
+        pdf_text_excerpt=(pdf_excerpt if provider == "OpenAI" else "")
     )
 
-    with st.spinner(f"Generating ({label_map[ss.selected_variant]})..."):
-        results = get_enhanced_openai_response(
-            client, system_prompt,
+    with st.spinner(f"Generating with {provider}"):
+        results = get_enhanced_response(
+            provider=provider,
+            openai_client=client,
+            prompt=system_prompt,
             expected_fields=VARIANT_FIELDS[ss.selected_variant],
-            model=DEFAULT_MODEL, n=NUM_VARIATIONS, pdf_file_id=pdf_file_id
+            model=model,
+            n=NUM_VARIATIONS,
+            pdf_file_id=(pdf_file_id if provider == "OpenAI" else None)
         )
 
-    st.success(f"{label_map[ss.selected_variant]}: Generated {len(results)} variation(s)")
+    st.success(f"{label_map[ss.selected_variant]}: Generated {len(results)} variation(s) via {provider}")
 
     # Save last run state
     ss.last_results = results
     ss.last_variant = ss.selected_variant
     ss.last_prompt = system_prompt
     ss.last_expected_fields = VARIANT_FIELDS[ss.selected_variant]
-    ss.last_pdf_file_id = pdf_file_id
-    ss.last_pdf_excerpt = pdf_excerpt
+    ss.last_pdf_file_id = (pdf_file_id if provider == "OpenAI" else None)
+    ss.last_pdf_excerpt = (pdf_excerpt if provider == "OpenAI" else "")
 
     # Render results
     for i, result in enumerate(results, 1):
@@ -630,6 +898,8 @@ def run_generation(user_feedback: str = ""):
 
         if ss.selected_variant == "ring":
             with st.expander(f"{label_map[ss.selected_variant]} — 📝 Variation {i}", expanded=(i == 1)):
+                char_count = total_chars_for_result(result, ss.last_expected_fields)
+
                 st.text_area("Title", result.get("Content_Title", ""), key=f"{ss.selected_variant}_title_{i}")
                 st.text_area("Body", result.get("Content_Body", ""), key=f"{ss.selected_variant}_body_{i}")
                 st.text_input("Headlines (pipe-separated)", result.get("Headline_Variants", ""), key=f"{ss.selected_variant}_head_{i}")
@@ -639,29 +909,35 @@ def run_generation(user_feedback: str = ""):
                 with cB:
                     st.text_input("Secondary Keywords", result.get("Keywords_Secondary", ""), key=f"{ss.selected_variant}_kw2_{i}")
                 st.text_area("Description", result.get("Description", ""), key=f"{ss.selected_variant}_desc_{i}")
-
+                st.text(f"Total charaters count : {char_count}")
         elif ss.selected_variant == "social":
             with st.expander(f"{label_map[ss.selected_variant]} — 📣 Variation {i}", expanded=(i == 1)):
+                char_count = total_chars_for_result(result, ss.last_expected_fields)
+
                 st.text_area("Hashtags", result.get("Hashtags", ""), key=f"{ss.selected_variant}_hashtags_{i}")
                 st.text_area("Engagement Hook", result.get("Engagement_Hook", ""), key=f"{ss.selected_variant}_hook_{i}")
                 st.text_area("Clear Value Proposition", result.get("Value_Prop", ""), key=f"{ss.selected_variant}_vp_{i}")
                 st.text_area("Address Missed Deliveries & Absence Concerns", result.get("Address_Concerns", ""), key=f"{ss.selected_variant}_concerns_{i}")
                 st.text_area("Content", result.get("Content", ""), key=f"{ss.selected_variant}_content_{i}")
-
+                st.text(f"Total charaters count : {char_count}")
         elif ss.selected_variant == "email":
             with st.expander(f"{label_map[ss.selected_variant]} — ✉️ Variation {i}", expanded=(i == 1)):
+                char_count = total_chars_for_result(result, ss.last_expected_fields)
+
                 st.text_input("Subject Line", result.get("Subject_Line", ""), key=f"{ss.selected_variant}_subj_{i}")
                 st.text_input("Greeting", result.get("Greeting", ""), key=f"{ss.selected_variant}_greet_{i}")
                 st.text_area("Main Content (100-150 words)", result.get("Main_Content", ""), key=f"{ss.selected_variant}_main_{i}")
                 st.text_input("Reference", result.get("Reference", ""), key=f"{ss.selected_variant}_ref_{i}")
-
+                st.text(f"Total charaters count : {char_count}")
         elif ss.selected_variant == "audience":
             with st.expander(f"{label_map[ss.selected_variant]} — 🧩 Variation {i}", expanded=(i == 1)):
+                char_count = total_chars_for_result(result, ss.last_expected_fields)
+
                 st.text_area("Emphasise easy installation & self-setup", result.get("Easy_Installation_Self_Setup", ""), key=f"{ss.selected_variant}_install_{i}")
                 st.text_area("Highlight technical features & control", result.get("Technical_Features_and_Control", ""), key=f"{ss.selected_variant}_features_{i}")
                 st.text_area("Include technical specifications", result.get("Technical_Specifications", ""), key=f"{ss.selected_variant}_specs_{i}")
                 st.text_area("Maintain security benefits messaging", result.get("Security_Benefits_Messaging", ""), key=f"{ss.selected_variant}_security_{i}")
-
+                st.text(f"Total charaters count : {char_count}")
 # Trigger initial generation
 if go:
     run_generation(user_feedback="")  # first pass, no feedback
