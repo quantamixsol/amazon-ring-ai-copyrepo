@@ -284,67 +284,6 @@ def extract_pdf_text_fallback(pdf_path: str, max_chars: int = 12000) -> str:
 
 # ---------- Core generation: OpenAI ----------
 # (Keep original function for compatibility)
-def get_enhanced_openai_response(
-    client,
-    prompt: str,
-    expected_fields: List[str],
-    model: str,
-    n: int = 1,
-    pdf_file_id: Optional[str] = None
-):
-    results = []
-    try:
-        if pdf_file_id:
-            # Responses API with file input
-            for _ in range(n):
-                resp = client.responses.create(
-                    model=model,
-                    instructions=prompt,
-                    input=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": "Generate the copy now following all requirements exactly. Return JSON only."},
-                            {"type": "input_file", "file_id": pdf_file_id}
-                        ]
-                    }],
-                )
-                content_text = resp.output_text
-                try:
-                    parsed = json.loads(content_text)
-                    if all(field in parsed for field in expected_fields):
-                        results.append(parsed)
-                    else:
-                        results.append({"error": "Missing fields", "raw": content_text})
-                except json.JSONDecodeError:
-                    results.append({"error": "Invalid JSON", "raw": content_text})
-            return results
-
-        # Chat Completions fallback (no file input)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "Generate the copy now following all requirements exactly. Return JSON only."}
-            ],
-            response_format={"type": "json_object"},
-            n=n,
-            max_tokens=8000
-        )
-        for choice in response.choices:
-            try:
-                content = choice.message.content
-                parsed = json.loads(content)
-                if all(field in parsed for field in expected_fields):
-                    results.append(parsed)
-                else:
-                    results.append({"error": "Missing fields", "raw": content})
-            except json.JSONDecodeError:
-                results.append({"error": "Invalid JSON", "raw": choice.message.content})
-        return results
-
-    except Exception as e:
-        return [{"error": str(e)}]
-
 # Keep default encoded_file for fallback use when no upload provided
 with open("Ring Copy Guidelines International 2025.pdf", "rb") as file:
     file_data = file.read()
@@ -422,6 +361,7 @@ def get_enhanced_openai_response(
                         ]
                     }],
                 )
+                print(f"response is {resp}")
                 content_text = resp.output_text
                 try:
                     parsed = json.loads(content_text)
@@ -653,15 +593,15 @@ with st.sidebar:
     ss.provider = st.selectbox("Provider", [ "Amazon Claude", "OpenAI", "Perplexity"])
     if ss.provider == "OpenAI":
         openai_models = "gpt-5"
-        ss.model_openai = st.text(f"Model Using : {openai_models}")
+        st.text(f"Model Using : {openai_models}")
     
     elif ss.provider == "Amazon Claude":
         amazon_claude_model = "Claude Sonnet 4"
-        ss.model_amazon_claude = st.text(f"Model Using : {amazon_claude_model}")
+        st.text(f"Model Using : {amazon_claude_model}")
         
     else:
         perplexity_models = "sonar-pro"
-        ss.model_perplexity = st.text(f"Model Using : {perplexity_models}")
+        st.text(f"Model Using : {perplexity_models}")
 
     uploaded = st.file_uploader("Upload (.xlsx / .xlsm)", type=["xlsx", "xlsm"],
                                 help="Clear this to fall back to the default Excel")
@@ -825,7 +765,7 @@ go = st.button("Generate Variations", use_container_width=True)
 def run_generation(user_feedback: str = ""):
     provider = ss.provider
     model = ss.model_amazon_claude 
-    if provider =="OpenAi":
+    if provider =="OpenAI":
         model=ss.model_openai
     elif provider == "Perplexity":
         model = ss.model_perplexity    
