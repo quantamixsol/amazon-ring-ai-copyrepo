@@ -283,6 +283,7 @@ def extract_pdf_text_fallback(pdf_path: str, max_chars: int = 12000) -> str:
         return ""
 
 # ---------- Core generation: OpenAI ----------
+# (Keep original function for compatibility)
 def get_enhanced_openai_response(
     client,
     prompt: str,
@@ -306,7 +307,6 @@ def get_enhanced_openai_response(
                             {"type": "input_file", "file_id": pdf_file_id}
                         ]
                     }],
-                    # You can also add: response_format={"type": "json_object"}
                 )
                 content_text = resp.output_text
                 try:
@@ -328,7 +328,7 @@ def get_enhanced_openai_response(
             ],
             response_format={"type": "json_object"},
             n=n,
-            max_tokens=8000  # FIXED: was max_completion_tokens
+            max_tokens=8000
         )
         for choice in response.choices:
             try:
@@ -345,6 +345,7 @@ def get_enhanced_openai_response(
     except Exception as e:
         return [{"error": str(e)}]
 
+# Keep default encoded_file for fallback use when no upload provided
 with open("Ring Copy Guidelines International 2025.pdf", "rb") as file:
     file_data = file.read()
     encoded_file = base64.b64encode(file_data).decode('utf-8')
@@ -354,28 +355,25 @@ with open("Ring Copy Guidelines International 2025.pdf", "rb") as file:
 def get_enhanced_perplexity_response(
     prompt: str,
     expected_fields: List[str],
-    n: int = 1
+    n: int = 1,
+    pdf_bytes: Optional[bytes] = None,
+    pdf_name: Optional[str] = None,
 ):
-    """Perplexity chat.completions; no file inputs supported here."""
-   
+    """Perplexity chat.completions; simulate file via base64 string in message content."""
     print(f"using perplexity model")
-    base_messages =[
-        {"role": "system", "content": [{"type":"text","text":f"{prompt}\n\n Do NOT wrap the output in markdown or code fences (no \`\`\`json, no backticks, no quotes before/after).Start with {{ and end with }}."}]},
 
+    # Prefer uploaded bytes if provided; else use default global base64
+    local_encoded = base64.b64encode(pdf_bytes).decode('utf-8') if pdf_bytes else encoded_file
+    local_name = pdf_name or "Ring Copy Guidelines International 2025.pdf"
+
+    base_messages =[
+        {"role": "system", "content": [{"type":"text","text":f"{prompt}\n\n Do NOT wrap the output in markdown or code fences (no ```json, no backticks, no quotes before/after).Start with {{ and end with }}."}]},
         {
             "role": "user",
             "content": [
-                {
-                    "type": "text",
-                    "text": "Generate the copy now following all requirements exactly. Return JSON only"
-                },
-                {
-                    "type": "file_url",
-                    "file_url": {
-                        "url": encoded_file,  # Just the base64 string, no prefix
-                        "file_name": "Ring Copy Guidelines International 2025.pdf"
-                    }
-                }
+                {"type": "text","text": "Generate the copy now following all requirements exactly. Return JSON only"},
+                {"type": "file_url","file_url": {"url": local_encoded,  # base64 string
+                                                      "file_name": local_name}}
             ]
         }
     ]
@@ -399,6 +397,7 @@ def get_enhanced_perplexity_response(
             results.append({"error": str(e)})
     return results
 
+# ---------- Core generation: OpenAI (duplicate kept for signature parity & logging) ----------
 def get_enhanced_openai_response(
     client,
     prompt: str,
@@ -411,7 +410,6 @@ def get_enhanced_openai_response(
     results = []
     try:
         if pdf_file_id:
-            # Responses API with file input
             for _ in range(n):
                 resp = client.responses.create(
                     model=model,
@@ -423,7 +421,6 @@ def get_enhanced_openai_response(
                             {"type": "input_file", "file_id": pdf_file_id}
                         ]
                     }],
-                    # You can also add: response_format={"type": "json_object"}
                 )
                 content_text = resp.output_text
                 try:
@@ -436,7 +433,6 @@ def get_enhanced_openai_response(
                     results.append({"error": "Invalid JSON", "raw": content_text})
             return results
 
-        # Chat Completions fallback (no file input)
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -445,7 +441,7 @@ def get_enhanced_openai_response(
             ],
             response_format={"type": "json_object"},
             n=n,
-            max_tokens=8000  # FIXED: was max_completion_tokens
+            max_tokens=8000
         )
         for choice in response.choices:
             try:
@@ -467,26 +463,32 @@ with open("Ring Copy Guidelines International 2025.pdf", "rb") as file:
     encoded_file = base64.b64encode(file_data).decode('utf-8')
 
 
-# ---------- Core generation: Perplexity ----------
+# ---------- Core generation: Amazon Bedrock (Claude) ----------
 def get_enhanced_amazon_response(
     prompt: str,
     expected_fields: List[str],
-    n: int = 1
+    n: int = 1,
+    pdf_bytes: Optional[bytes] = None,
+    pdf_name: Optional[str] = None,
 ):
-    """Perplexity chat.completions; no file inputs supported here."""
-   
-    print(f"calling Amazon model ")
-    
-    with open("Ring Copy Guidelines International 2025.pdf", "rb") as f:
-        pdf_bytes = f.read()
-   
-    system=[{"text":f"{prompt}\n\n Do NOT wrap the output in markdown or code fences (no \`\`\`json, no backticks, no quotes before/after).Start with {{ and end with }}."}]
+    print(f"calling Amazon model, file name is {pdf_name} ")
+
+    # Use uploaded bytes if provided; else read default guideline file
+    if pdf_bytes is None:
+        with open("Ring Copy Guidelines International 2025.pdf", "rb") as f:
+            pdf_bytes = f.read()
+            
+    filename = "RingCopyGuidelinesInternational2025"  
+    if pdf_name:
+        filename = "document"      
+        
+    system=[{"text":f"{prompt}\n\n Do NOT wrap the output in markdown or code fences (no ```json, no backticks, no quotes before/after).Start with {{ and end with }}."}]
     message = [ 
                {
                    "role": "user",
                     "content": [
                             {   
-                             "document":{"format":"pdf", "name":"Ring Copy Guidelines International 2025", "source":{"bytes":pdf_bytes}}
+                             "document":{"format":"pdf", "name": filename , "source":{"bytes":pdf_bytes}}
                             },
                             {
                                 "text": "Generate the copy now following all requirements exactly. Return JSON only"
@@ -494,7 +496,6 @@ def get_enhanced_amazon_response(
                         ]
                     }
                ]
-
     results = []
     for _ in range(max(1, n)):
         try:
@@ -523,21 +524,25 @@ def get_enhanced_response(
     expected_fields: List[str],
     model: str,
     n: int = 1,
-    pdf_file_id: Optional[str] = None
+    pdf_file_id: Optional[str] = None,
+    pdf_bytes: Optional[bytes] = None,
+    pdf_name: Optional[str] = None,
 ):
     if provider == "Perplexity":
-        # Perplexity does not support file attach in this flow; ignore pdf_file_id
         return get_enhanced_perplexity_response(
             prompt=prompt,
             expected_fields=expected_fields,
-            n=n
+            n=n,
+            pdf_bytes=pdf_bytes,
+            pdf_name="document.pdf",
         )
-     
     elif provider == "Amazon Claude":
         return get_enhanced_amazon_response(
             prompt=prompt,
             expected_fields=expected_fields,
-            n=n
+            n=n,
+            pdf_bytes=pdf_bytes,
+            pdf_name="document.pdf",
         )    
     # OpenAI
     return get_enhanced_openai_response(
@@ -558,7 +563,6 @@ def total_chars_for_result(result: dict, fields: Optional[List[str]] = None) -> 
         return 0
     if fields:
         return sum(len(coerce_str(result.get(f, ""))) for f in fields)
-    # fallback: count over string-like values
     return sum(len(coerce_str(v)) for v in result.values() if isinstance(v, (str, int, float)))
 
 def get_pdf_b64_from_bytes(pdf_bytes: Optional[bytes]) -> str:
@@ -598,6 +602,11 @@ ss.setdefault("provider", DEFAULT_PROVIDER)
 ss.setdefault("model_openai", OPENAI_DEFAULT_MODEL)
 ss.setdefault("model_perplexity", PERPLEXITY_DEFAULT_MODEL)
 ss.setdefault("model_amazon_claude", AMAZON_CLAUDE_DEFAULT_MODEL)
+
+# NEW: PDF source + uploaded bytes
+ss.setdefault("pdf_source", "Default guidelines PDF")  # "Default guidelines PDF" | "Upload a PDF"
+ss.setdefault("uploaded_pdf_bytes", None)
+ss.setdefault("uploaded_pdf_name", None)
 
 # feedback state (TEXT ONLY)
 ss.setdefault("feedback_text", "")
@@ -653,6 +662,7 @@ with st.sidebar:
     else:
         perplexity_models = "sonar-pro"
         ss.model_perplexity = st.text(f"Model Using : {perplexity_models}")
+
     uploaded = st.file_uploader("Upload (.xlsx / .xlsm)", type=["xlsx", "xlsm"],
                                 help="Clear this to fall back to the default Excel")
 
@@ -664,6 +674,22 @@ with st.sidebar:
         ss.uploaded_bytes = uploaded.getvalue()
         ss.uploaded_name = uploaded.name
         st.success(f"Selected: {uploaded.name}")
+
+    # NEW: Dropdown to choose PDF source + uploader when needed
+    st.markdown("---")
+    ss.pdf_source = st.selectbox("Guidelines PDF", ["Default guidelines PDF", "Upload a PDF"], help="Choose which PDF to pass to the model")
+    if ss.pdf_source == "Upload a PDF":
+        uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"], key="u_pdf")
+        if uploaded_pdf is not None:
+            ss.uploaded_pdf_bytes = uploaded_pdf.getvalue()
+            ss.uploaded_pdf_name = uploaded_pdf.name
+            st.success(f"PDF selected: {uploaded_pdf.name}")
+        else:
+            ss.uploaded_pdf_bytes = None
+            ss.uploaded_pdf_name = None
+    else:
+        ss.uploaded_pdf_bytes = None
+        ss.uploaded_pdf_name = None
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -700,7 +726,10 @@ with st.sidebar:
         ss.preview_visible = False
 
     # PDF attach line (note: Perplexity path won't use it)
-    st.text("Attached Ring Copy Guidelines International 2025.pdf")
+    if ss.pdf_source == "Default guidelines PDF":
+        st.text("Attached Ring Copy Guidelines International 2025.pdf")
+    elif ss.uploaded_pdf_name:
+        st.text(f"Attached: {ss.uploaded_pdf_name}")
 
 # ====================== MAIN ======================
 
@@ -809,10 +838,10 @@ def run_generation(user_feedback: str = ""):
             return
         client = get_openai_client(api_key)
     else:
-        if not os.getenv("PERPLEXITY_API_KEY", ""):
+        if not os.getenv("PERPLEXITY_API_KEY", "") and provider == "Perplexity":
             st.error("Missing PERPLEXITY_API_KEY.")
             return
-        client = None  # not used for Perplexity
+        client = None  # not used for Perplexity / Amazon
 
     if not (ss.file_loaded and ss.first_df is not None and ss.xls is not None):
         st.error("Use the **sidebar**: upload or use default, then click **Show** at least once to load the file.")
@@ -827,14 +856,38 @@ def run_generation(user_feedback: str = ""):
 
     auto_guidelines, auto_template = try_autodetect_long_text(ss.xls)
 
-    # OpenAI-only PDF attach/fallback (skipped for Perplexity)
+    # Determine which PDF to use
+    pdf_bytes: Optional[bytes] = None
+    chosen_pdf_path: Optional[str] = None
+    pdf_name: Optional[str] = None
+    if ss.pdf_source == "Upload a PDF" and ss.uploaded_pdf_bytes:
+        pdf_bytes = ss.uploaded_pdf_bytes
+        safe_name = os.path.basename(ss.uploaded_pdf_name or "uploaded_guidelines.pdf")
+        pdf_name = safe_name
+        chosen_pdf_path = safe_name
+        try:
+            with open(chosen_pdf_path, "wb") as wf:
+                wf.write(pdf_bytes)
+        except Exception as e:
+            st.error(f"Failed saving uploaded PDF: {e}")
+            return
+    else:
+        if not os.path.exists(PDF_FILENAME):
+            st.error(f"Default PDF not found: {PDF_FILENAME}")
+            return
+        chosen_pdf_path = PDF_FILENAME
+        pdf_name = os.path.basename(PDF_FILENAME)
+        with open(PDF_FILENAME, "rb") as f:
+            pdf_bytes = f.read()
+
+    # OpenAI-only PDF attach/fallback
     pdf_file_id = None
     pdf_excerpt = ""
     if provider == "OpenAI":
-        if ENABLE_PDF_ATTACHMENT:
-            pdf_file_id = upload_pdf_and_get_file_id(client, PDF_FILENAME)
-        if not pdf_file_id and ENABLE_PDF_TEXT_FALLBACK:
-            pdf_excerpt = extract_pdf_text_fallback(PDF_FILENAME, max_chars=8000)
+        if ENABLE_PDF_ATTACHMENT and chosen_pdf_path:
+            pdf_file_id = upload_pdf_and_get_file_id(client, chosen_pdf_path)
+        if not pdf_file_id and ENABLE_PDF_TEXT_FALLBACK and chosen_pdf_path:
+            pdf_excerpt = extract_pdf_text_fallback(chosen_pdf_path, max_chars=8000)
 
     # Build content data
     if ss.use_specific_pui:
@@ -873,7 +926,9 @@ def run_generation(user_feedback: str = ""):
             expected_fields=VARIANT_FIELDS[ss.selected_variant],
             model=model,
             n=NUM_VARIATIONS,
-            pdf_file_id=(pdf_file_id if provider == "OpenAI" else None)
+            pdf_file_id=(pdf_file_id if provider == "OpenAI" else None),
+            pdf_bytes=pdf_bytes,
+            pdf_name=pdf_name,
         )
 
     st.success(f"{label_map[ss.selected_variant]}: Generated {len(results)} variation(s) via {provider}")
