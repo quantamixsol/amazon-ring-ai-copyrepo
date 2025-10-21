@@ -424,7 +424,7 @@ with tab_freestyle:
 
     st.caption(
         "Write any **System Prompt** you want. Optionally include context from the Excel template "
-        "and/or the Guidelines PDF. Output is plain text."
+        "and/or the Guidelines PDF. "
     )
 
     # Toggles to include context sources
