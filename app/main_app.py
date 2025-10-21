@@ -1,6 +1,7 @@
-# main_app.py — Tabs layout: "Setup" (all config) + "Generate Copy" (creative flow)
+# main_app.py — Tabs layout: "Setup" (all config) + "Generate Copy" (creative flow) + "Free Style"
 # Unified config control, Excel/PDF fallbacks, filenames shown, Excel preview,
-# Advanced settings in Setup tab, generation & feedback in "Generate Copy" tab.
+# Advanced settings in Setup tab, generation & feedback in "Generate Copy" tab,
+# and a new "Free Style" tab for ad-hoc prompting with optional template/PDF context.
 
 import os
 from io import BytesIO
@@ -69,9 +70,8 @@ def _label(name: str | None, source: str | None) -> str:
     suffix = " (uploaded)" if source == "uploaded" else (" (default)" if source == "default" else "")
     return f"{name}{suffix}"
 
-
 # =============================== Tabs ===============================
-tab_setup, tab_generate = st.tabs(["🧩 Setup", "✍️ Generate Copy"])
+tab_setup, tab_generate, tab_freestyle = st.tabs(["🧩 Setup", "✍️ Generate Copy", "🎨 Free Style"])
 
 # =============================== Setup Tab ===============================
 with tab_setup:
@@ -414,6 +414,130 @@ with tab_generate:
         if st.button("Regenerate with feedback", use_container_width=True):
             fb = (ss.feedback_text or "").strip()
             run_generation(user_feedback=fb)
+
+# =============================== Free Style Tab ===============================
+with tab_freestyle:
+    st.markdown("## 🎨 Free Style")
+
+    st.caption(
+        "Write any **System Prompt** you want. Optionally include context from the Excel template "
+        "and/or the Guidelines PDF. Output is plain text."
+    )
+
+    # Toggles to include context sources
+    col_fs1, col_fs2 = st.columns(2)
+    with col_fs1:
+        include_template = st.toggle("Include Excel template content", value=True)
+    with col_fs2:
+        include_guidelines = st.toggle("Include Guidelines PDF", value=True)
+
+    # User system prompt
+    fs_system_prompt = st.text_area(
+        "System Prompt ",
+        value=ss.get("fs_system_prompt", ""),
+        key="fs_system_prompt",
+        height=150,
+        placeholder="e.g., You are a senior brand copywriter. Create punchy, privacy-forward copy for smart security devices...",
+    )
+
+    # Optional user message (task/instructions)
+    fs_user_task = st.text_area(
+        "Your instructions / task ",
+        value=ss.get("fs_user_task", ""),
+        key="fs_user_task",
+        height=140,
+        placeholder="e.g., Write a 3-headline set and a 50-word body introducing our latest smart doorbell.",
+    )
+
+    # Provider + model (reuse Setup selection)
+    provider = ss.provider
+    model = ss.model_amazon_claude
+    if provider == "OpenAI":
+        model = ss.model_openai
+    elif provider == "Perplexity":
+        model = ss.model_perplexity
+
+    # Build freestyle context payloads
+    template_excerpt = ""
+    pdf_excerpt = ""
+
+    if include_template:
+        if ss.get("xls") is not None:
+            template_excerpt = workbook_excerpt_for_llm(ss.xls, rows_per_sheet=50, char_limit=PDF_CONTEXT_CHARS_DEFAULT)
+        else:
+            st.info("Excel template not loaded; switch to **Setup** to load or use default. Proceeding without template.")
+            template_excerpt = ""
+
+    if include_guidelines:
+        # Try uploaded first, else default; use text fallback (works across providers)
+        chosen_pdf_path = None
+        if ss.get("uploaded_pdf_bytes"):
+            safe_name = os.path.basename(ss.get("uploaded_pdf_name") or "uploaded_guidelines.pdf")
+            try:
+                with open(safe_name, "wb") as wf:
+                    wf.write(ss.uploaded_pdf_bytes)
+                chosen_pdf_path = safe_name
+            except Exception as e:
+                st.warning(f"Could not persist uploaded PDF for reading. ({e})")
+        elif os.path.exists(PDF_FILENAME):
+            chosen_pdf_path = PDF_FILENAME
+
+        if chosen_pdf_path:
+            try:
+                pdf_excerpt = extract_pdf_text_fallback(chosen_pdf_path, max_chars=8000)
+            except Exception as e:
+                st.warning(f"Could not read PDF text. ({e})")
+                pdf_excerpt = ""
+        else:
+            st.info("No Guidelines PDF available; proceeding without it.")
+
+    def _compose_freestyle_prompt() -> str:
+        # Everything gets folded into a single message so this works with any provider.
+        blocks = []
+        if fs_user_task.strip():
+            blocks.append(f"[TASK]\n{fs_user_task.strip()}")
+        if include_template and template_excerpt:
+            blocks.append(f"[TEMPLATE EXCERPT]\n{template_excerpt}")
+        if include_guidelines and pdf_excerpt:
+            blocks.append(f"[GUIDELINES EXCERPT]\n{pdf_excerpt}")
+        if not blocks:
+            blocks.append("No additional context supplied.")
+        return "\n\n".join(blocks)
+
+    # Generate button
+    if st.button("✨ Generate (Freestyle)", use_container_width=True):
+        if provider != "OpenAI":
+            st.warning("Freestyle currently uses OpenAI for generation. Switch provider to **OpenAI** in Setup.")
+        else:
+            api_key = os.getenv("OPENAI_API_KEY", "")
+            if not api_key:
+                st.error("Missing OPENAI_API_KEY.")
+            elif not (fs_system_prompt or fs_user_task or template_excerpt or pdf_excerpt):
+                st.error("Please add a System Prompt or some context before generating.")
+            else:
+                client = get_openai_client(api_key)
+                composed_user_msg = _compose_freestyle_prompt()
+
+                # Chat-style call (kept simple/robust)
+                try:
+                    with st.spinner("Calling OpenAI..."):
+                        # Compatible with the standard Chat Completions interface
+                        resp = client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": fs_system_prompt.strip() or "You are a helpful writing assistant."},
+                                {"role": "user", "content": composed_user_msg},
+                            ],
+                        )
+                        text = resp.choices[0].message.content if resp and resp.choices else ""
+                    if not text:
+                        st.warning("No content returned.")
+                    else:
+                        st.success("Generated response")
+                        st.markdown("#### Output")
+                        st.write(text)
+                except Exception as e:
+                    st.error(f"Freestyle generation failed: {e}")
 
 # ---------- Footer ----------
 footer_disclaimer()
