@@ -30,6 +30,7 @@ from app.io.pdf import upload_pdf_and_get_file_id, extract_pdf_text_fallback
 from app.prompts.variants import DEFAULT_CONTEXT
 from app.prompts.builder import build_system_prompt_text_variant
 from app.services.generation import get_enhanced_response
+from app.services.freestyle import freestyle_generate_text
 from app.providers.openai_provider import get_openai_client
 from app.schemas import VARIANT_FIELDS, VARIANT_MODELS
 
@@ -494,53 +495,27 @@ with tab_freestyle:
         else:
             st.info("No Guidelines PDF available; proceeding without it.")
 
-    def _compose_freestyle_prompt() -> str:
-        # Everything gets folded into a single message so this works with any provider.
-        blocks = []
-        if fs_user_task.strip():
-            blocks.append(f"[TASK]\n{fs_user_task.strip()}")
-        if include_template and template_excerpt:
-            blocks.append(f"[TEMPLATE EXCERPT]\n{template_excerpt}")
-        if include_guidelines and pdf_excerpt:
-            blocks.append(f"[GUIDELINES EXCERPT]\n{pdf_excerpt}")
-        if not blocks:
-            blocks.append("No additional context supplied.")
-        return "\n\n".join(blocks)
-
     # Generate button
     if st.button("✨ Generate (Freestyle)", use_container_width=True):
-        if provider != "OpenAI":
-            st.warning("Freestyle currently uses OpenAI for generation. Switch provider to **OpenAI** in Setup.")
-        else:
-            api_key = os.getenv("OPENAI_API_KEY", "")
-            if not api_key:
-                st.error("Missing OPENAI_API_KEY.")
-            elif not (fs_system_prompt or fs_user_task or template_excerpt or pdf_excerpt):
-                st.error("Please add a System Prompt or some context before generating.")
+        try:
+            text = freestyle_generate_text(
+                provider=ss.provider,
+                model=(ss.model_openai if ss.provider == "OpenAI"
+                    else ss.model_amazon_claude if ss.provider == "Amazon Claude"
+                    else ss.model_perplexity),
+                system_prompt=ss.get("fs_system_prompt", ""),
+                user_task=ss.get("fs_user_task", ""),
+                template_excerpt=(template_excerpt if include_template else ""),
+                pdf_excerpt=(pdf_excerpt if include_guidelines else ""),
+            )
+            if not text:
+                st.warning("No content returned.")
             else:
-                client = get_openai_client(api_key)
-                composed_user_msg = _compose_freestyle_prompt()
-
-                # Chat-style call (kept simple/robust)
-                try:
-                    with st.spinner("Calling OpenAI..."):
-                        # Compatible with the standard Chat Completions interface
-                        resp = client.chat.completions.create(
-                            model=model,
-                            messages=[
-                                {"role": "system", "content": fs_system_prompt.strip() or "You are a helpful writing assistant."},
-                                {"role": "user", "content": composed_user_msg},
-                            ],
-                        )
-                        text = resp.choices[0].message.content if resp and resp.choices else ""
-                    if not text:
-                        st.warning("No content returned.")
-                    else:
-                        st.success("Generated response")
-                        st.markdown("#### Output")
-                        st.write(text)
-                except Exception as e:
-                    st.error(f"Freestyle generation failed: {e}")
+                st.success("Generated response")
+                st.markdown("#### Output")
+                st.write(text)
+        except Exception as e:
+            st.error(f"Freestyle generation failed: {e}")
 
 # ---------- Footer ----------
 footer_disclaimer()
