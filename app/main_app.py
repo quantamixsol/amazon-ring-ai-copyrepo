@@ -6,6 +6,9 @@ import os
 from io import BytesIO
 import streamlit as st
 
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(__file__, "..", "..")))
+
 from app.config import (
     PDF_CONTEXT_CHARS_DEFAULT,
     NUM_VARIATIONS,
