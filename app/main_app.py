@@ -38,6 +38,11 @@ from app.schemas import VARIANT_FIELDS, VARIANT_MODELS
 setup_page()
 init_session_state()
 ss = st.session_state
+# Make Amazon Claude the default provider on first load
+if not ss.get("provider_init_done", False):
+    ss.provider = "Amazon Claude"
+    ss.provider_init_done = True
+
 
 # ---------- Helpers ----------
 def _load_excel_from_bytes(data: bytes, name: str) -> bool:
@@ -75,7 +80,7 @@ def _label(name: str | None, source: str | None) -> str:
     return f"{name}{suffix}"
 
 # =============================== Tabs ===============================
-tab_setup, tab_generate, tab_freestyle = st.tabs(["🧩 Setup", "✍️ Generate Copy", "🎨 Free Style"])
+tab_generate, tab_freestyle, tab_setup = st.tabs(["✍️ Generate Copy", "🎨 Free Style","🧩 Setup"])
 
 # =============================== Setup Tab ===============================
 with tab_setup:
@@ -171,13 +176,13 @@ with tab_setup:
     # -------- Advanced settings in Setup --------
     st.markdown("## 🧩 Advanced settings")
     with st.expander("Open advanced settings", expanded=False):
-        provider_options = ["OpenAI", "Amazon Claude", "Perplexity"]
+        provider_options = ["Amazon Claude","OpenAI",  "Perplexity"]
         default_idx = provider_options.index(ss.provider) if ss.get("provider") in provider_options else 0
         ss.provider = st.selectbox(
             "Provider",
             provider_options,
             index=default_idx,
-            help="Default is OpenAI (recommended).",
+            help="Default is Amazon Claude (recommended).",
         )
 
         if ss.provider == "OpenAI":
