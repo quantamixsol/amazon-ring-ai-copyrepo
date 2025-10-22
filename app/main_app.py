@@ -176,21 +176,18 @@ with tab_setup:
     # -------- Advanced settings in Setup --------
     st.markdown("## 🧩 Advanced settings")
     with st.expander("Open advanced settings", expanded=False):
-        provider_options = ["Amazon Claude","OpenAI",  "Perplexity"]
-        default_idx = provider_options.index(ss.provider) if ss.get("provider") in provider_options else 0
+        # --- ONLY AMAZON CLAUDE EXPOSED ---
+        provider_options = ["Amazon Claude"]  # OpenAI / Perplexity hidden
+        default_idx = 0
         ss.provider = st.selectbox(
             "Provider",
             provider_options,
             index=default_idx,
-            help="Default is Amazon Claude (recommended).",
+            help="Only Amazon Claude is enabled.",
         )
 
-        if ss.provider == "OpenAI":
-            st.text("Model Using : gpt-5")
-        elif ss.provider == "Amazon Claude":
-            st.text("Model Using : Claude Sonnet 4")
-        else:
-            st.text("Model Using : sonar-pro")
+        # Fixed model info for display
+        st.text("Model Using : Claude Sonnet 4")
 
         st.markdown("---")
 
@@ -288,26 +285,14 @@ with tab_generate:
             st.error("Please choose a copy type above before generating.")
             return
 
-        provider = ss.provider
-        # Resolve model name string (kept identical to original logic)
+        # Force Amazon Claude only
+        provider = "Amazon Claude"
         model = ss.model_amazon_claude
-        if provider == "OpenAI":
-            model = ss.model_openai
-        elif provider == "Perplexity":
-            model = ss.model_perplexity
 
-        # API clients / keys
-        if provider == "OpenAI":
-            api_key = os.getenv("OPENAI_API_KEY", "")
-            if not api_key:
-                st.error("Missing OPENAI_API_KEY.")
-                return
-            client = get_openai_client(api_key)
-        else:
-            if provider == "Perplexity" and not os.getenv("PERPLEXITY_API_KEY", ""):
-                st.error("Missing PERPLEXITY_API_KEY.")
-                return
-            client = None
+        # --- DISABLED: OpenAI & Perplexity client/key handling ---
+        # if provider == "OpenAI": ...
+        # elif provider == "Perplexity": ...
+        client = None  # Not used for Claude path
 
         # Authoring context
         base_prompt = ss.get(base_key, DEFAULT_CONTEXT[active_mode]["base_prompt"])
@@ -341,14 +326,9 @@ with tab_generate:
             with open(PDF_FILENAME, "rb") as f:
                 pdf_bytes = f.read()
 
-        # OpenAI-only PDF attach/fallback
+        # --- DISABLED: OpenAI-only PDF attach/fallback ---
         pdf_file_id = None
         pdf_excerpt = ""
-        if provider == "OpenAI":
-            if chosen_pdf_path:
-                pdf_file_id = upload_pdf_and_get_file_id(client, chosen_pdf_path)
-            if not pdf_file_id and chosen_pdf_path:
-                pdf_excerpt = extract_pdf_text_fallback(chosen_pdf_path, max_chars=8000)
 
         # Content data (either specific row or compact excerpt)
         if ss.use_specific_pui:
@@ -376,18 +356,18 @@ with tab_generate:
             guardrails=guardrails,
             PDF_CONTEXT_CHARS=PDF_CONTEXT_CHARS_DEFAULT,
             user_feedback=user_feedback.strip(),
-            pdf_text_excerpt=(pdf_excerpt if provider == "OpenAI" else ""),
+            pdf_text_excerpt="",  # OpenAI excerpt disabled
         )
 
         with st.spinner(f"Generating with {provider}"):
             results = get_enhanced_response(
                 provider=provider,
-                openai_client=client,
+                openai_client=client,  # not used
                 prompt=system_prompt,
                 expected_fields=VARIANT_FIELDS[ss.selected_variant],
                 model=model,
                 n=NUM_VARIATIONS,
-                pdf_file_id=(pdf_file_id if provider == "OpenAI" else None),
+                pdf_file_id=None,  # OpenAI-only feature disabled
                 pdf_bytes=pdf_bytes,
                 pdf_name=pdf_name,
                 pydantic_model=VARIANT_MODELS[ss.selected_variant],
@@ -398,8 +378,8 @@ with tab_generate:
         ss.last_variant = ss.selected_variant
         ss.last_prompt = system_prompt
         ss.last_expected_fields = VARIANT_FIELDS[ss.selected_variant]
-        ss.last_pdf_file_id = (pdf_file_id if provider == "OpenAI" else None)
-        ss.last_pdf_excerpt = (pdf_excerpt if provider == "OpenAI" else "")
+        ss.last_pdf_file_id = None
+        ss.last_pdf_excerpt = ""
 
         render_results(label_map[ss.selected_variant], ss.selected_variant, results, ss.last_expected_fields)
 
@@ -458,13 +438,9 @@ with tab_freestyle:
         placeholder="e.g., Write a 3-headline set and a 50-word body introducing our latest smart doorbell.",
     )
 
-    # Provider + model (reuse Setup selection)
-    provider = ss.provider
+    # --- FORCE AMAZON CLAUDE ONLY ---
+    provider = "Amazon Claude"
     model = ss.model_amazon_claude
-    if provider == "OpenAI":
-        model = ss.model_openai
-    elif provider == "Perplexity":
-        model = ss.model_perplexity
 
     # Build freestyle context payloads
     template_excerpt = ""
@@ -504,10 +480,8 @@ with tab_freestyle:
     if st.button("✨ Generate (Freestyle)", use_container_width=True):
         try:
             text = freestyle_generate_text(
-                provider=ss.provider,
-                model=(ss.model_openai if ss.provider == "OpenAI"
-                    else ss.model_amazon_claude if ss.provider == "Amazon Claude"
-                    else ss.model_perplexity),
+                provider=provider,  # Claude only
+                model=model,
                 system_prompt=ss.get("fs_system_prompt", ""),
                 user_task=ss.get("fs_user_task", ""),
                 template_excerpt=(template_excerpt if include_template else ""),
