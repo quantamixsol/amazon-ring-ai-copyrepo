@@ -527,10 +527,12 @@ with tab_freestyle:
             "headlines constraints, etc.). Then click **Regenerate with feedback**."
         )
         ss.feedback_text_from_freestyle = st.text_area(
-            "Feedback for the next run",
+            "Feedback for the next run (Freestyle)",
+            key="feedback_text_from_freestyle",
             height=120,
             placeholder="Example: Shorter body, emphasise privacy, headlines under 6 words, no exclamation marks.",
         )
+
 
         if st.button("Regenerate with feedback", use_container_width=True):
             fb = (ss.feedback_text_from_freestyle or "").strip()
