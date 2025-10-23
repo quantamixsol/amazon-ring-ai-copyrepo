@@ -38,9 +38,11 @@ def init_session_state():
 
     # feedback
     ss.setdefault("feedback_text", "")
+    ss.setdefault("feedback_text_from_freestyle","")
 
     # last-run
     ss.setdefault("last_results", None)
+    ss.setdefault("last_results_free_style",None)
     ss.setdefault("last_variant", None)
     ss.setdefault("last_prompt", None)
     ss.setdefault("last_expected_fields", None)

@@ -251,10 +251,20 @@ with tab_generate:
                 type=("primary" if is_selected else "secondary"),
                 use_container_width=True,
             )
-            if clicked:
+            if f"ctx_{key_mode}_base" not in ss or not ss.get(f"ctx_{key_mode}_base"):
                 ss[f"ctx_{key_mode}_base"] = DEFAULT_CONTEXT[key_mode]["base_prompt"]
+            if f"ctx_{key_mode}_extra" not in ss or not ss.get(f"ctx_{key_mode}_extra"):
                 ss[f"ctx_{key_mode}_extra"] = DEFAULT_CONTEXT[key_mode]["additional_context"]
+            if f"ctx_{key_mode}_guard" not in ss or not ss.get(f"ctx_{key_mode}_guard"):
                 ss[f"ctx_{key_mode}_guard"] = DEFAULT_CONTEXT[key_mode]["guardrails"]
+            
+            if clicked:
+                if f"ctx_{key_mode}_base" not in ss or not ss.get(f"ctx_{key_mode}_base"):
+                    ss[f"ctx_{key_mode}_base"] = DEFAULT_CONTEXT[key_mode]["base_prompt"]
+                if f"ctx_{key_mode}_extra" not in ss or not ss.get(f"ctx_{key_mode}_extra"):
+                    ss[f"ctx_{key_mode}_extra"] = DEFAULT_CONTEXT[key_mode]["additional_context"]
+                if f"ctx_{key_mode}_guard" not in ss or not ss.get(f"ctx_{key_mode}_guard"):
+                    ss[f"ctx_{key_mode}_guard"] = DEFAULT_CONTEXT[key_mode]["guardrails"]
                 ss.selected_variant = key_mode
                 do_rerun()
 
@@ -412,6 +422,21 @@ with tab_freestyle:
         "Write any **System Prompt** you want. Optionally include context from the Excel template "
         "and/or the Guidelines PDF. "
     )
+    
+    # -------- NEW: sensible defaults (set once, don't clobber user edits) --------
+    if "fs_system_prompt" not in ss or not ss.get("fs_system_prompt"):
+        ss.fs_system_prompt = (
+            "You are a senior brand copywriter. You write concise, engaging copy with a clear value prop, "
+            "trust-forward tone, and simple language. Follow brand voice, avoid cliches, and respect any constraints. "
+            "When helpful, offer 2–3 alternative phrasings."
+        )
+    if "fs_user_task" not in ss or not ss.get("fs_user_task"):
+        ss.fs_user_task = (
+            "Create 3 alternative headlines (≤ 6 words each) and a 40–60 word body introducing a smart doorbell. "
+            "Focus on privacy, reliability, and easy setup. No exclamation marks."
+        )
+
+
 
     # Toggles to include context sources
     col_fs1, col_fs2 = st.columns(2)
@@ -487,14 +512,41 @@ with tab_freestyle:
                 template_excerpt=(template_excerpt if include_template else ""),
                 pdf_excerpt=(pdf_excerpt if include_guidelines else ""),
             )
+            ss.last_results_free_style = text
             if not text:
                 st.warning("No content returned.")
             else:
                 st.success("Generated response")
-                st.markdown("#### Output")
                 st.write(text)
         except Exception as e:
             st.error(f"Freestyle generation failed: {e}")
+    if ss.get("last_results_free_style") is not None:
+        st.markdown("## 🗣️ Feedback")
+        st.caption(
+            "Provide specific, text-only feedback (tone, length, messaging priorities, compliance notes, "
+            "headlines constraints, etc.). Then click **Regenerate with feedback**."
+        )
+        ss.feedback_text_from_freestyle = st.text_area(
+            "Feedback for the next run",
+            value=ss.feedback_text_from_freestyle,
+            height=120,
+            placeholder="Example: Shorter body, emphasise privacy, headlines under 6 words, no exclamation marks.",
+        )
+
+        if st.button("Regenerate with feedback", use_container_width=True):
+            fb = (ss.feedback_text_from_freestyle or "").strip()
+            user_task = f"for this response : {ss. last_results_free_style}\n\n Regenerate this response based on given user feedback : {fb} "
+            text = freestyle_generate_text(
+                provider=provider,  # Claude only
+                model=model,
+                system_prompt=ss.get("fs_system_prompt", ""),
+                user_task=user_task,
+                template_excerpt=(template_excerpt if include_template else ""),
+                pdf_excerpt=(pdf_excerpt if include_guidelines else ""),
+            )
+            st.success("Regenerated response")
+            st.write(text)
+            
 
 # ---------- Footer ----------
 footer_disclaimer()

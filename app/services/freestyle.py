@@ -56,9 +56,11 @@ def freestyle_generate_text(
 
     if provider == "Amazon Claude" or provider.lower().startswith("amazon"):
         br = boto3.client("bedrock-runtime", region_name="us-east-1")
+        if not system_prompt:
+            system_prompt = "You are a helpful writing assistant"
         resp = br.converse(
             modelId="us.anthropic.claude-sonnet-4-20250514-v1:0",
-            system=[{"text": system_prompt or "You are a helpful writing assistant."}],
+            system=[{"text": f"{system_prompt} .. Generate response in UK English" }],
             messages=[{"role": "user", "content": [{"text": user_msg}]}],
         )
         return resp["output"]["message"]["content"][0]["text"]
