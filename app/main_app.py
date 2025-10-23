@@ -259,12 +259,12 @@ with tab_generate:
                 ss[f"ctx_{key_mode}_guard"] = DEFAULT_CONTEXT[key_mode]["guardrails"]
             
             if clicked:
-                if f"ctx_{key_mode}_base" not in ss or not ss.get(f"ctx_{key_mode}_base"):
-                    ss[f"ctx_{key_mode}_base"] = DEFAULT_CONTEXT[key_mode]["base_prompt"]
-                if f"ctx_{key_mode}_extra" not in ss or not ss.get(f"ctx_{key_mode}_extra"):
-                    ss[f"ctx_{key_mode}_extra"] = DEFAULT_CONTEXT[key_mode]["additional_context"]
-                if f"ctx_{key_mode}_guard" not in ss or not ss.get(f"ctx_{key_mode}_guard"):
-                    ss[f"ctx_{key_mode}_guard"] = DEFAULT_CONTEXT[key_mode]["guardrails"]
+                # if f"ctx_{key_mode}_base" not in ss or not ss.get(f"ctx_{key_mode}_base"):
+                ss[f"ctx_{key_mode}_base"] = DEFAULT_CONTEXT[key_mode]["base_prompt"]
+                # if f"ctx_{key_mode}_extra" not in ss or not ss.get(f"ctx_{key_mode}_extra"):
+                ss[f"ctx_{key_mode}_extra"] = DEFAULT_CONTEXT[key_mode]["additional_context"]
+                # if f"ctx_{key_mode}_guard" not in ss or not ss.get(f"ctx_{key_mode}_guard"):
+                ss[f"ctx_{key_mode}_guard"] = DEFAULT_CONTEXT[key_mode]["guardrails"]
                 ss.selected_variant = key_mode
                 do_rerun()
 
