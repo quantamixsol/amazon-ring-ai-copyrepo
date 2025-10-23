@@ -18,6 +18,5 @@ def setup_page():
 def footer_disclaimer():
     st.markdown("---")
     st.warning(
-        "DISCLAIMER: All generated copy should be reviewed and approved by one of our in-house copywriters and, where applicable, legal counsel before publication or use. "
-        "This content is provided as a starting point and may require modifications to ensure accuracy, compliance with relevant regulations, and alignment with our brand voice."
+        "DISCLAIMER: AI can make mistakes. Please review the outputs generated and follow established content approval processes, including any necessary legal review requirements, when using copy generated from this tool."
     )
