@@ -512,11 +512,12 @@ with tab_freestyle:
                 template_excerpt=(template_excerpt if include_template else ""),
                 pdf_excerpt=(pdf_excerpt if include_guidelines else ""),
             )
-            ss.last_results_free_style = text
+            
             if not text:
                 st.warning("No content returned.")
             else:
                 st.success("Generated response")
+                ss.last_results_free_style = text
                 st.write(text)
         except Exception as e:
             st.error(f"Freestyle generation failed: {e}")
@@ -526,7 +527,7 @@ with tab_freestyle:
             "Provide specific, text-only feedback (tone, length, messaging priorities, compliance notes, "
             "headlines constraints, etc.). Then click **Regenerate with feedback**."
         )
-        ss.feedback_text_from_freestyle = st.text_area(
+        st.text_area(
             "Feedback for the next run (Freestyle)",
             key="feedback_text_from_freestyle",
             height=120,
@@ -547,6 +548,8 @@ with tab_freestyle:
             )
             st.success("Regenerated response")
             st.write(text)
+            ss.last_results_free_style = text
+
             
 
 # ---------- Footer ----------
