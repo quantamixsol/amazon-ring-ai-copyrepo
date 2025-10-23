@@ -528,7 +528,7 @@ with tab_freestyle:
         )
         ss.feedback_text_from_freestyle = st.text_area(
             "Feedback for the next run",
-            value=ss.feedback_text_from_freestyle,
+            value=ss.get("feedback_text_from_freestyle",""),
             height=120,
             placeholder="Example: Shorter body, emphasise privacy, headlines under 6 words, no exclamation marks.",
         )
